@@ -1,0 +1,279 @@
+/* Shared styling for the pipeline control pages. */
+:root{
+    --bg:#0f1216; --panel:#171b21; --panel2:#1e242c; --line:#2a323c;
+    --text:#e6edf3; --dim:#8b98a5; --accent:#4a9eff;
+    --ok:#3fb950; --warn:#d29922; --bad:#f85149; --idle:#6e7681;
+    --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+       font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+  header{display:flex;align-items:center;gap:16px;flex-wrap:wrap;
+         padding:14px 20px;background:var(--panel);border-bottom:1px solid var(--line)}
+  h1{font-size:16px;margin:0;font-weight:600;letter-spacing:.3px}
+  .wrap{padding:20px;max-width:1400px;margin:0 auto}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+        padding:16px;min-width:0}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;
+           color:var(--dim);margin:0 0 12px;font-weight:600}
+  .pill{display:inline-flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;
+        font-weight:600;font-size:13px;background:var(--panel2);border:1px solid var(--line)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--idle);flex:none}
+  .dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+  .dot.bad{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+  .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;
+       border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--dim)} .row .v{font-variant-numeric:tabular-nums;text-align:right;
+       word-break:break-all}
+  .btns{display:flex;gap:8px;flex-wrap:wrap}
+  button{font:inherit;font-weight:600;color:var(--text);background:var(--panel2);
+         border:1px solid var(--line);border-radius:8px;padding:9px 16px;cursor:pointer}
+  button:hover:not(:disabled){border-color:var(--accent)}
+  button:disabled{opacity:.4;cursor:not-allowed}
+  button.primary{background:#12406e;border-color:#1d5fa5}
+  button.danger{background:#5a1d1d;border-color:#8b2d2d}
+  button.small{padding:5px 10px;font-size:12px;font-weight:500}
+  .meter{height:7px;background:var(--panel2);border-radius:4px;overflow:hidden;margin-top:6px}
+  .meter i{display:block;height:100%;background:var(--accent);transition:width .4s}
+  .meter i.warn{background:var(--warn)} .meter i.bad{background:var(--bad)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--dim);font-weight:600;font-size:11px;
+     text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;
+     border-bottom:1px solid var(--line)}
+  td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:0}
+  input,select{font:inherit;width:100%;background:var(--bg);color:var(--text);
+       border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  label{display:block;margin-bottom:12px}
+  label span{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+  pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;
+      overflow:auto;max-height:340px;font-size:12px;line-height:1.5;margin:0;
+      font-family:Consolas,"Cascadia Mono",monospace;white-space:pre-wrap;word-break:break-word}
+  .muted{color:var(--dim);font-size:12px}
+  .note{border-left:3px solid var(--accent);background:var(--panel2);padding:9px 12px;
+        border-radius:0 7px 7px 0;font-size:13px;margin-bottom:12px}
+  .note.bad{border-color:var(--bad)} .note.ok{border-color:var(--ok)}
+  .note.warn{border-color:var(--warn)}
+  .folder{display:flex;justify-content:space-between;align-items:center;gap:10px;
+          padding:7px 0;border-bottom:1px solid var(--line)}
+  .folder:last-child{border-bottom:0}
+  .folder .p{font-size:11px;color:var(--dim);font-family:Consolas,monospace;
+             word-break:break-all}
+  .full{grid-column:1/-1}
+  #toast{position:fixed;right:18px;bottom:18px;background:var(--panel2);
+         border:1px solid var(--line);border-left:3px solid var(--accent);
+         border-radius:8px;padding:12px 16px;max-width:420px;opacity:0;
+         transform:translateY(8px);transition:.25s;pointer-events:none;z-index:9}
+  #toast.show{opacity:1;transform:none}
+  #toast.bad{border-left-color:var(--bad)} #toast.ok{border-left-color:var(--ok)}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+        font-size:12px;font-weight:600;border:1px solid var(--line);background:var(--panel2)}
+  .chip.pass{color:#7ee2a8;border-color:#1d6b40;background:#10281b}
+  .chip.fail{color:#ff9b93;border-color:#7a2b25;background:#2a1312}
+  .chip.pending{color:var(--dim)}
+  .chip.na{color:var(--dim);opacity:.75}
+  .comp{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);
+        border-radius:8px;margin-bottom:6px;cursor:pointer;background:var(--panel2)}
+  .comp:hover{border-color:var(--accent)}
+  .comp.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .comp.na{opacity:.55;cursor:default}
+  .docpane{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:14px}
+  @media (max-width:1000px){ .docpane{grid-template-columns:1fr} }
+  .docpane iframe{width:100%;height:560px;border:1px solid var(--line);border-radius:8px;background:#fff}
+  .insrow{display:flex;justify-content:space-between;gap:10px;padding:9px 0;
+          border-bottom:1px solid var(--line);align-items:center}
+  .insrow:last-child{border-bottom:0}
+
+/* Header navigation between the control pages. */
+.navlink{color:var(--dim);text-decoration:none;font-weight:600;font-size:13px;
+         padding:6px 12px;border-radius:8px;border:1px solid transparent}
+.navlink:hover{color:var(--text);border-color:var(--line);background:var(--panel2)}
+.navlink.active{color:var(--text);background:var(--panel2);border-color:var(--accent)}
+
+/* CNC routing view */
+.tp{width:100%;background:#0b0e12;border:1px solid var(--line);border-radius:8px}
+.tp .cut{stroke:#4a9eff;stroke-width:1.4;fill:none;vector-effect:non-scaling-stroke}
+.tp .rapid{stroke:#5b6673;stroke-width:1;fill:none;stroke-dasharray:4 4;
+           vector-effect:non-scaling-stroke}
+.tp .ramp{stroke:#d29922;stroke-width:1.4;fill:none;vector-effect:non-scaling-stroke}
+.tp .sheet{fill:none;stroke:#2a323c;stroke-width:1;stroke-dasharray:6 5;
+           vector-effect:non-scaling-stroke}
+.tp .hole{fill:#ff9b93;stroke:none}
+.tp .hi .cut,.tp .hi .ramp{stroke:#7ee2a8;stroke-width:2.4}
+.oprow{display:flex;gap:8px;align-items:center;padding:5px 8px;border-radius:6px;cursor:pointer}
+.oprow:hover{background:var(--panel2)}
+.oprow.sel{background:var(--panel2);box-shadow:0 0 0 1px var(--accent) inset}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--dim);margin-top:6px}
+.legend i{display:inline-block;width:16px;height:0;border-top:2px solid;margin-right:5px;
+          vertical-align:middle}
+
+/* Per-operation toolpath cards */
+.opgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;margin-top:10px}
+.opcard{border:1px solid var(--line);border-radius:8px;padding:9px;background:var(--panel2)}
+.opcard-h{display:flex;justify-content:space-between;gap:8px;align-items:baseline;
+          margin-bottom:6px;font-size:13px}
+.opstats{width:100%;font-size:12px;margin-top:6px}
+.opstats td{padding:2px 0;border:0}
+.opstats td:first-child{color:var(--dim)}
+.opstats td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+
+/* Component-first inspection flow */
+.crumb{font-size:13px;color:var(--dim);margin-bottom:12px}
+.crumb a{color:var(--accent);text-decoration:none}
+.crumb a:hover{text-decoration:underline}
+.crumb .sep{margin:0 8px;color:var(--line)}
+.suggest{position:absolute;z-index:5;left:0;right:0;top:100%;background:var(--panel2);
+         border:1px solid var(--line);border-radius:0 0 8px 8px;max-height:220px;
+         overflow:auto;display:none}
+.pickgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.pickcard{border:1px solid var(--line);border-radius:9px;padding:10px;cursor:pointer;
+          background:var(--panel2)}
+.pickcard:hover{border-color:var(--accent)}
+.pickcard.pass{border-color:#1d6b40}
+.pickcard.fail{border-color:#7a2b25}
+.pickcard-h{display:flex;justify-content:space-between;align-items:center;gap:6px;
+            margin-bottom:4px}
+.wizhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
+         flex-wrap:wrap;margin-bottom:6px}
+.steps{display:flex;align-items:center}
+.stepdot{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;
+         justify-content:center;border:1px solid var(--line);background:var(--panel2);
+         font-size:13px;font-weight:600;cursor:pointer;color:var(--dim)}
+.stepdot.cur{border-color:var(--accent);color:var(--text)}
+.stepdot.pass{background:#10281b;border-color:#1d6b40;color:#7ee2a8}
+.stepdot.fail{background:#2a1312;border-color:#7a2b25;color:#ff9b93}
+.stepline{width:26px;height:1px;background:var(--line)}
+.decide{margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:9px;
+        background:var(--panel2)}
+.wiznav{display:flex;justify-content:space-between;margin-top:14px}
+
+/* Order layout upload */
+.dropzone{border:2px dashed var(--line);border-radius:10px;padding:26px;text-align:center;
+          display:flex;flex-direction:column;gap:8px;align-items:center;
+          background:var(--panel2)}
+.dropzone.over{border-color:var(--accent);background:#12406e33}
+.layouthead{display:flex;justify-content:space-between;align-items:center;gap:10px;
+            margin-bottom:6px}
+
+/* Layout drawings supplied as images rather than PDF */
+.imgframe{border:1px solid var(--line);border-radius:8px;background:#fff;overflow:auto;
+          max-height:560px;display:flex;align-items:flex-start;justify-content:center}
+.imgframe img{max-width:100%;height:auto;display:block}
+
+/* Determined-configuration read-out */
+.determined{border:1px solid var(--line);border-radius:9px;padding:11px;background:var(--panel2)}
+.dettable{width:100%;font-size:13px}
+.dettable td{padding:5px 0;border-bottom:1px solid var(--line);vertical-align:top}
+.dettable tr:last-child td{border-bottom:0}
+.dettable td:first-child{color:var(--dim);width:42%}
+
+/* Series / scenario setup blocks */
+.addbox{margin-top:18px;padding:13px;border:1px dashed var(--line);border-radius:9px;
+        background:var(--panel2)}
+.addbox h2{margin-top:0}
+
+/* Toolpath: material removal versus approach travel */
+.tp .inpart{stroke:#ff4d4d;stroke-width:2.6;fill:none;vector-effect:non-scaling-stroke}
+.tp .approach{stroke:#7d8794;stroke-width:1.2;fill:none;vector-effect:non-scaling-stroke}
+.tp .part{fill:#182029;stroke:#3d4854;stroke-width:1.2;vector-effect:non-scaling-stroke}
+
+/* Drawing markup: a transparent canvas laid exactly over the drawing frame.
+   There is no PDF library here, so the PDF is never touched -- strokes are
+   vectors in 0..1 PAGE coordinates, drawn on top and stored separately. */
+.mkbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px;
+       padding:6px 8px;border:1px solid var(--line);border-radius:8px;
+       background:var(--panel2)}
+.mkbar .sep{width:1px;height:18px;background:var(--line);margin:0 2px}
+.mkbar button.on{border-color:var(--accent);background:#12406e}
+.mkbar .swatch{display:inline-block;width:11px;height:11px;border-radius:50%;
+               background:#ff2d2d;margin-right:6px;vertical-align:-1px}
+.mkstate{font-size:12px;color:var(--dim);margin-left:auto;white-space:nowrap}
+.mkstate.dirty{color:var(--warn)} .mkstate.saved{color:var(--ok)}
+.mkstate.bad{color:var(--bad)}
+/* The stage is the window onto the drawing; the page is the drawing itself,
+   sized by mkLayout() to the PDF's own proportions times our zoom. The canvas
+   is a sibling of the iframe INSIDE the page, so a mark is positioned against
+   the drawing rather than against the viewport -- zooming or scrolling moves
+   both together because they are the same box. */
+.mkstage{position:relative;overflow:auto;background:#0b0e12;
+         border:1px solid var(--line);border-radius:8px;
+         height:560px;display:flex;align-items:flex-start;justify-content:center}
+.mkpage{position:relative;flex:0 0 auto;line-height:0;background:#fff;
+        margin:auto}
+.mkpage iframe{position:absolute;left:0;top:0;width:100%;height:100%;border:0;
+               /* The plugin is pinned to page-fit and must stay that way: its
+                  own zoom is invisible to us and would slide the drawing out
+                  from under the marks. */
+               pointer-events:none}
+.mkpage canvas{position:absolute;left:0;top:0;width:100%;height:100%;
+               pointer-events:none;touch-action:none}
+.mkstage.drawing canvas{pointer-events:auto;cursor:crosshair}
+.mkzoom{font-size:12px;color:var(--dim);min-width:42px;text-align:center;
+        font-variant-numeric:tabular-nums}
+.mkhint{font-size:11px;margin-top:5px}
+.mkhint a{color:var(--accent)}
+.mkdot{display:inline-block;width:6px;height:6px;border-radius:50%;
+       background:#ff2d2d;position:absolute;top:2px;right:2px}
+.stepdot{position:relative}
+
+/* Tester builds hide everything that acts on the pipeline machine. */
+body.tester-mode .operator-only{display:none}
+
+/* ---------- who is testing: the picker ---------- */
+.overlay{position:fixed;inset:0;background:#0b0e12ee;z-index:60;
+    display:flex;align-items:center;justify-content:center;padding:20px}
+.pickcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:22px;max-width:620px;width:100%;max-height:88vh;overflow:auto}
+.pickcard h1{margin:0 0 4px;font-size:20px}
+.pickcard p{margin:0 0 16px}
+.userpicks{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+.userpick{display:flex;align-items:center;gap:10px;text-align:left;padding:10px 12px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+    color:var(--text);cursor:pointer;font:inherit;width:100%}
+.userpick:hover{border-color:var(--accent);background:#12406e22}
+.userpick b{display:block;font-size:14px}
+.userpick .muted{display:block;font-size:11px}
+.userpick-i{flex:0 0 32px;height:32px;border-radius:50%;background:var(--accent);
+    color:#06101d;display:flex;align-items:center;justify-content:center;
+    font-weight:700;font-size:12px}
+.pickother{display:flex;gap:8px;align-items:flex-end;margin-top:16px;
+    padding-top:14px;border-top:1px solid var(--line)}
+.pickother label{flex:1}
+
+/* ---------- roles ---------- */
+/* Tester builds hide everything that acts on the pipeline machine; setup
+   controls stay hidden until admin is unlocked. */
+.admin-only{display:none}
+body.admin-mode .admin-only{display:block}
+body.admin-mode .admin-only.inline{display:inline-block}
+.whopill{display:inline-flex;align-items:center;gap:6px}
+.whopill .userpick-i{flex:0 0 20px;height:20px;font-size:9px}
+.adminbadge{background:var(--warn);color:#1a1206;border-radius:5px;
+    padding:1px 6px;font-size:10px;font-weight:700;letter-spacing:.4px}
+
+/* ---------- one card per toolpath ---------- */
+/* Each operation is its own picture and its own numbers. Wider than the old
+   grid because these cards are now the whole view, not thumbnails under an
+   overview plot. */
+.tpgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:12px;margin-top:10px}
+.tpcard{border:1px solid var(--line);border-radius:8px;padding:11px;background:var(--panel2)}
+.tpcard-h{display:flex;justify-content:space-between;gap:8px;align-items:baseline;
+    margin-bottom:2px}
+.tpcard-h b{font-size:14px}
+.tpcard-sub{font-size:11px;color:var(--dim);margin-bottom:8px}
+.tpkey{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0 4px;padding:8px;
+    background:var(--panel);border-radius:6px}
+.tpkey div{font-size:11px;color:var(--dim)}
+.tpkey b{display:block;font-size:15px;color:var(--text)}
+.tpkey b.hero{color:#ff8f8f}
+
+/* ---------- assigning scenarios to testers ---------- */
+.assignbox{display:flex;flex-wrap:wrap;gap:6px 14px;padding:9px 10px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:8px}
+.assignone{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;
+    color:var(--text);white-space:nowrap}
+.assignone input{width:auto;margin:0}

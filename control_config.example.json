@@ -1,0 +1,9 @@
+{
+  "_comment": "Control service settings. role: operator = full pipeline control; tester = inspection only (no Fusion on that machine). testing_base is the shared folder holding scenarios, layouts and results. artifacts_base overrides where pipeline output is read from - tester bundles point it at the network share.",
+  "host": "0.0.0.0",
+  "port": 8765,
+  "token": "REPLACE_ME_WITH_A_NEW_TOKEN",
+  "run_mode": "VM",
+  "role": "operator",
+  "testing_base": "\\\\ddc-mefs\\Fusion\\UAT SHARED FILES\\testing"
+}

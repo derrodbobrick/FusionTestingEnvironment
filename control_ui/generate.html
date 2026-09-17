@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Generate Input JSONs</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>Generate Input JSONs</h1>
+  <span class="pill"><i class="dot" id="hdrDot"></i><span id="hdrState">ready</span></span>
+  <span class="muted" id="hdrMeta"></span>
+  <span style="flex:1"></span>
+  <a class="navlink" href="/">Pipeline</a>
+  <a class="navlink" href="/inspection">Inspection &amp; testing</a>
+  <a class="navlink active" href="/generate">Generate inputs</a>
+  <span class="muted" id="hdrClock"></span>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <div class="card full">
+      <h2>Scenario CSV</h2>
+      <p class="muted" style="margin:0 0 12px">
+        Each row of a validation sheet becomes one order JSON containing a single
+        component. Notes above the table are skipped automatically &mdash; the
+        header is found by looking for known parameter names.
+      </p>
+      <div class="dropzone" id="csvDrop">
+        <div><b>Drop a scenario CSV here</b></div>
+        <div class="muted">or</div>
+        <button class="small primary" id="csvPick">Choose file</button>
+        <input type="file" id="csvFile" accept=".csv,text/csv" style="display:none">
+      </div>
+      <div id="csvNote" style="margin-top:12px"></div>
+    </div>
+
+    <div class="card full" id="previewCard" style="display:none">
+      <h2>Preview</h2>
+      <div id="csvSummary"></div>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:0 14px">
+        <label><span>series_id written into every JSON</span>
+          <input id="genSeries" placeholder="2082G.67P"></label>
+        <label><span>Scenario name prefix</span>
+          <input id="genPrefix" placeholder="2X81_"></label>
+        <label><span>Component type</span>
+          <select id="genKind">
+            <option value="door">door</option>
+            <option value="panel">panel</option>
+            <option value="stile">stile</option>
+          </select></label>
+        <label><span>Write to</span>
+          <select id="genDest">
+            <option value="dropbox">Watched dropbox (queues for processing)</option>
+            <option value="staging">Staging folder (not processed)</option>
+          </select></label>
+      </div>
+
+      <h2 style="margin-top:8px">Rows</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <button class="small" id="selAll">Select all</button>
+        <button class="small" id="selNone">Select none</button>
+        <label style="margin:0;display:flex;gap:6px;align-items:center">
+          <span style="margin:0">Range</span>
+          <input id="rangeFrom" style="width:80px" placeholder="1">
+          <span style="margin:0">to</span>
+          <input id="rangeTo" style="width:80px" placeholder="50">
+        </label>
+        <button class="small" id="selRange">Select range</button>
+        <span style="flex:1"></span>
+        <span class="muted" id="selCount">0 selected</span>
+      </div>
+      <div id="rowsBox" style="max-height:420px;overflow:auto"></div>
+      <div style="margin-top:8px"><button class="small" id="loadMore">Load more rows</button></div>
+
+      <div class="btns" style="margin-top:14px">
+        <button class="primary" id="genPlan">Check what will be written</button>
+        <button class="danger" id="genGo" disabled>Generate JSONs</button>
+      </div>
+      <div id="genResult" style="margin-top:12px"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+async function genHeader(){
+  const r = await api('/api/status');
+  if(!r.ok) return;
+  const d = r.data;
+  $('hdrDot').className = 'dot ' + (d.fusion_running ?
+    (d.effective_state === 'paused' ? 'warn' : 'ok') : 'bad');
+  $('hdrState').textContent = d.fusion_running
+    ? ('pipeline ' + d.effective_state) : 'pipeline not running';
+  $('hdrClock').textContent = d.server_time || '';
+}
+genHeader();
+setInterval(genHeader, 10000);
+
+let parsed = null;          // preview payload from the server
+let allRows = [];           // rows loaded so far
+let selected = new Set();   // scenario names chosen
+
+/* ---------- upload ---------- */
+
+$('csvPick').onclick = () => $('csvFile').click();
+$('csvFile').onchange = () => uploadCsv($('csvFile').files[0]);
+
+['dragenter','dragover'].forEach(ev => $('csvDrop').addEventListener(ev, e => {
+  e.preventDefault(); $('csvDrop').classList.add('over');
+}));
+['dragleave','drop'].forEach(ev => $('csvDrop').addEventListener(ev, e => {
+  e.preventDefault(); $('csvDrop').classList.remove('over');
+}));
+$('csvDrop').addEventListener('drop', e => {
+  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  uploadCsv(f);
+});
+
+async function uploadCsv(file){
+  if(!file) return;
+  if(!/\.csv$/i.test(file.name)){ toast('Drop a .csv file', 'bad'); return; }
+  $('csvNote').innerHTML = '<div class="muted">reading ' + esc(file.name) + '&hellip;</div>';
+  let res, data = {};
+  try{
+    res = await fetch('/api/generate/parse?name=' + encodeURIComponent(file.name), {
+      method:'POST', credentials:'same-origin',
+      headers:{'Content-Type':'text/csv'}, body:file
+    });
+    data = await res.json();
+  }catch(e){
+    $('csvNote').innerHTML = '<div class="note bad">Upload failed: ' + esc(String(e)) + '</div>';
+    return;
+  }
+  if(!res.ok || !data.ok){
+    $('csvNote').innerHTML = '<div class="note bad">' + esc(data.message || 'could not read that CSV') + '</div>';
+    return;
+  }
+  parsed = data;
+  allRows = data.rows.slice();
+  selected = new Set();
+  $('csvNote').innerHTML = '';
+  renderPreview(file.name);
+}
+
+/* ---------- preview ---------- */
+
+function suggestPrefix(filename){
+  // The two stile sheets both number their rows 2X8X_SV_0001 upward, so
+  // without a prefix the second batch overwrites the first. Take the
+  // sub-series from the filename (2X81, 2X86) -- but only when the scenario
+  // names do not already carry it, or you get 2X8X_2X8X_DV_0001.
+  const m = (filename || '').match(/^(\dX\d+)/i);
+  if(!m) return '';
+  const p = m[1].toUpperCase() + '_';
+  const first = (allRows[0] || {}).scenario || '';
+  return first.toUpperCase().startsWith(p) ? '' : p;
+}
+
+function renderPreview(filename){
+  $('previewCard').style.display = 'block';
+  $('genKind').value = parsed.kind;
+  $('genPrefix').value = suggestPrefix(filename);
+
+  const unknown = (parsed.unknown_columns || []).length
+    ? '<div class="note warn"><b>Columns not recognised and therefore ignored:</b> ' +
+      esc(parsed.unknown_columns.join(', ')) + '</div>' : '';
+
+  $('csvSummary').innerHTML = unknown +
+    '<div class="note"><b>' + esc(filename) + '</b><br>' +
+    parsed.row_count.toLocaleString() + ' scenarios &middot; detected as <b>' +
+    esc(parsed.kind) + '</b> &middot; ' + parsed.preamble_rows +
+    ' note row(s) skipped above the header<br>' +
+    '<span class="muted">parameters: ' + esc((parsed.columns || []).join(', ')) +
+    '</span></div>';
+
+  renderRows();
+}
+
+function renderRows(){
+  const cols = parsed.columns || [];
+  const head = '<tr><th style="width:34px"></th><th>#</th><th>Scenario</th>' +
+    cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr>';
+  const body = allRows.map((r, i) =>
+    '<tr><td><input type="checkbox" data-row="' + esc(r.scenario) + '"' +
+      (selected.has(r.scenario) ? ' checked' : '') + '></td>' +
+    '<td class="muted">' + (i + 1) + '</td><td><b>' + esc(r.scenario) + '</b></td>' +
+    cols.map(c => '<td>' + esc(r.values[c] == null ? '' : r.values[c]) + '</td>').join('') +
+    '</tr>').join('');
+  $('rowsBox').innerHTML = '<table>' + head + body + '</table>';
+  $('rowsBox').querySelectorAll('[data-row]').forEach(cb => cb.onchange = () => {
+    if(cb.checked) selected.add(cb.dataset.row); else selected.delete(cb.dataset.row);
+    updateCount();
+  });
+  $('loadMore').style.display = allRows.length < parsed.row_count ? 'inline-block' : 'none';
+  updateCount();
+}
+
+function updateCount(){
+  $('selCount').textContent = selected.size.toLocaleString() + ' of ' +
+    parsed.row_count.toLocaleString() + ' selected' +
+    (allRows.length < parsed.row_count
+      ? '  (' + allRows.length.toLocaleString() + ' loaded)' : '');
+  $('genGo').disabled = true;   // re-check after any change to the selection
+}
+
+$('loadMore').onclick = async () => {
+  const r = await api('/api/generate/rows?key=' + encodeURIComponent(parsed.key) +
+                      '&offset=' + allRows.length + '&limit=500');
+  if(!r.ok){ toast('Could not load more rows', 'bad'); return; }
+  allRows = allRows.concat(r.data.rows || []);
+  renderRows();
+};
+
+$('selAll').onclick = async () => {
+  // Selecting everything must cover rows not yet loaded, not just what is
+  // on screen -- otherwise "all" would quietly mean "the first 200".
+  if(allRows.length < parsed.row_count){
+    const r = await api('/api/generate/rows?key=' + encodeURIComponent(parsed.key) +
+                        '&offset=0&limit=1000');
+    if(r.ok && (r.data.rows || []).length){
+      const have = new Set(allRows.map(x => x.scenario));
+      (r.data.rows || []).forEach(x => { if(!have.has(x.scenario)) allRows.push(x); });
+    }
+  }
+  toast('Selecting all ' + parsed.row_count.toLocaleString() + ' scenarios', 'ok');
+  const r2 = await api('/api/generate/rows?key=' + encodeURIComponent(parsed.key) +
+                       '&offset=0&limit=1000');
+  selected = new Set();
+  // The server holds the full sheet; ask it for every name in pages.
+  let off = 0;
+  while(off < parsed.row_count){
+    const page = await api('/api/generate/rows?key=' + encodeURIComponent(parsed.key) +
+                           '&offset=' + off + '&limit=1000');
+    if(!page.ok) break;
+    (page.data.rows || []).forEach(x => selected.add(x.scenario));
+    off += 1000;
+  }
+  renderRows();
+};
+
+$('selNone').onclick = () => { selected = new Set(); renderRows(); };
+
+$('selRange').onclick = async () => {
+  const from = Math.max(1, parseInt($('rangeFrom').value || '1', 10));
+  const to = Math.max(from, parseInt($('rangeTo').value || '50', 10));
+  const page = await api('/api/generate/rows?key=' + encodeURIComponent(parsed.key) +
+                         '&offset=' + (from - 1) + '&limit=' + Math.min(to - from + 1, 1000));
+  if(!page.ok){ toast('Could not read that range', 'bad'); return; }
+  selected = new Set((page.data.rows || []).map(x => x.scenario));
+  const have = new Set(allRows.map(x => x.scenario));
+  (page.data.rows || []).forEach(x => { if(!have.has(x.scenario)) allRows.push(x); });
+  renderRows();
+};
+
+/* ---------- plan then write ---------- */
+
+$('genPlan').onclick = async () => {
+  if(!selected.size){ toast('Select at least one row', 'bad'); return; }
+  const r = await api('/api/generate/plan', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key: parsed.key, scenarios: [...selected],
+                          prefix: $('genPrefix').value, destination: $('genDest').value})
+  });
+  const d = r.data || {};
+  if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+  const p = d.plan;
+  const warn = p.existing
+    ? '<div class="note bad"><b>' + p.existing + ' file(s) already exist there</b> and ' +
+      'would be overwritten, e.g. ' + esc(p.existing_examples.join(', ')) +
+      '.<br>Change the prefix to keep these separate, or tick overwrite below.' +
+      '<label style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
+      '<input type="checkbox" id="genOverwrite" style="width:auto">' +
+      '<span style="margin:0">Overwrite existing files</span></label></div>'
+    : '';
+  const dropboxWarn = $('genDest').value === 'dropbox'
+    ? '<div class="note warn">These go straight into the folder Fusion watches, ' +
+      'so the pipeline will queue <b>' + p.count.toLocaleString() + '</b> order(s) ' +
+      'for processing.</div>' : '';
+  $('genResult').innerHTML = dropboxWarn + warn +
+    '<div class="note"><b>' + p.count.toLocaleString() + '</b> file(s) will be written to<br>' +
+    '<span class="muted">' + esc(p.directory) + '</span>' +
+    (p.reachable ? '' : '<br><span style="color:var(--bad)">destination is not reachable</span>') +
+    '<br><span class="muted">e.g. ' + esc((p.examples || []).slice(0, 4).join(', ')) + '</span></div>';
+  $('genGo').disabled = !p.reachable;
+};
+
+$('genGo').onclick = async () => {
+  const series = $('genSeries').value.trim();
+  if(!series){ toast('Enter the series_id to write into each JSON', 'bad'); return; }
+  const ow = $('genOverwrite');
+  $('genGo').disabled = true;
+  const r = await api('/api/generate/write', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({key: parsed.key, scenarios: [...selected],
+                          series_id: series, kind: $('genKind').value,
+                          prefix: $('genPrefix').value, destination: $('genDest').value,
+                          overwrite: !!(ow && ow.checked)})
+  });
+  const d = r.data || {};
+  if(!d.ok){
+    $('genResult').innerHTML = '<div class="note bad">' + esc(d.message || 'failed') + '</div>';
+    return;
+  }
+  toast('Wrote ' + d.written + ' JSON file(s)', 'ok');
+  $('genResult').innerHTML =
+    '<div class="note ok"><b>Wrote ' + d.written.toLocaleString() + ' file(s)</b> to<br>' +
+    '<span class="muted">' + esc(d.directory) + '</span>' +
+    (d.skipped ? '<br>' + d.skipped + ' skipped because they already existed (' +
+                 esc((d.skipped_examples || []).join(', ')) + ')' : '') +
+    '</div>';
+};
+</script>
+</body>
+</html>

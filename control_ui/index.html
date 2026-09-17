@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fusion Pipeline Control</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>Fusion Pipeline Control</h1>
+  <span class="pill"><i class="dot" id="hdrDot"></i><span id="hdrState">connecting…</span></span>
+  <span class="muted" id="hdrMeta"></span>
+  <span style="flex:1"></span>
+  <a class="navlink active" href="/">Pipeline</a>
+  <a class="navlink" href="/inspection">Inspection &amp; testing</a>
+  <a class="navlink" href="/generate">Generate inputs</a>
+  <span class="muted" id="hdrClock"></span>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+
+    <div class="card">
+      <h2>Process control</h2>
+      <div id="ctlNote"></div>
+      <div class="btns">
+        <button class="primary" data-act="start">Start</button>
+        <button data-act="pause">Pause</button>
+        <button data-act="resume">Resume</button>
+        <button class="danger" data-act="kill">Kill</button>
+        <button class="danger" data-act="restart">Restart</button>
+      </div>
+      <div id="holdBox" style="margin-top:14px;padding:10px 12px;background:var(--panel2);
+                               border:1px solid var(--line);border-radius:8px">
+        <label style="margin:0;display:flex;gap:9px;align-items:flex-start;cursor:pointer">
+          <input type="checkbox" id="holdOnStart" style="width:auto;margin-top:3px">
+          <span style="margin:0">
+            <b style="color:var(--text)">Hold orders on start</b><br>
+            <span class="muted">The add-in runs at Fusion startup and begins
+            taking orders immediately. Tick this to bring Fusion up idle, so you
+            can scan the hub and change configuration without an order starting.
+            Survives restarts until you untick it or press Resume.</span>
+          </span>
+        </label>
+      </div>
+      <p class="muted" style="margin:12px 0 0">
+        Pause and Resume are handled by the add-in and take effect at the next
+        safe boundary — the order in flight always finishes. Kill and Restart
+        act on the process directly and will drop an in-flight order.
+      </p>
+    </div>
+
+    <div class="card">
+      <h2>Health</h2>
+      <div class="row"><span class="k">Threads</span><span class="v" id="hThreads">—</span></div>
+      <div class="meter"><i id="mThreads"></i></div>
+      <div class="row" style="margin-top:10px"><span class="k">Memory</span><span class="v" id="hMem">—</span></div>
+      <div class="meter"><i id="mMem"></i></div>
+      <div class="row" style="margin-top:10px"><span class="k">Heartbeat age</span><span class="v" id="hBeat">—</span></div>
+      <div class="row"><span class="k">PID</span><span class="v" id="hPid">—</span></div>
+      <div class="row"><span class="k">Run mode</span><span class="v" id="hMode">—</span></div>
+      <div class="row"><span class="k">Add-in version</span><span class="v" id="hVer">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Current order</h2>
+      <div class="row"><span class="k">Order</span><span class="v" id="oId">—</span></div>
+      <div class="row"><span class="k">Component</span><span class="v" id="oComp">—</span></div>
+      <div class="row"><span class="k">Step</span><span class="v" id="oStep">—</span></div>
+      <div class="row"><span class="k">Queue</span><span class="v" id="oQueue">—</span></div>
+      <div class="meter" style="margin-top:10px"><i id="mProg"></i></div>
+      <div class="muted" id="oProg" style="margin-top:6px">—</div>
+      <div class="row" style="margin-top:10px">
+        <span class="k">Session completed / failed</span>
+        <span class="v" id="oSession">—</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Folders</h2>
+      <div id="folders" class="muted">loading…</div>
+    </div>
+
+    <div class="card full">
+      <h2>Cloud model &amp; drawing configuration</h2>
+      <div class="note">
+        These names must match the Fusion Hub documents exactly. If none of them
+        resolve, the pipeline falls back to local models — which contain no
+        drawings — and the run produces none.
+      </div>
+
+      <div id="hubBar" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+                              padding:10px 12px;background:var(--panel2);
+                              border:1px solid var(--line);border-radius:8px;margin-bottom:14px">
+        <button class="small" id="hubScan">Scan hub</button>
+        <span class="muted" id="hubState">no scan yet</span>
+        <span style="flex:1"></span>
+        <label style="margin:0;display:flex;align-items:center;gap:8px">
+          <span style="margin:0">Project</span>
+          <select id="c_project_name" style="min-width:240px"></select>
+        </label>
+      </div>
+
+      <div id="cfgLoadState"></div>
+      <div id="cfgNote"></div>
+
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:0 16px">
+        <label><span>Folder</span><select id="c_folder_name"></select></label>
+        <label><span>Door model</span><select id="c_door_model"></select></label>
+        <label><span>Door drawing</span><select id="c_door_drawing"></select></label>
+        <label><span>Panel model</span><select id="c_panel_model"></select></label>
+        <label><span>Panel drawing</span><select id="c_panel_drawing"></select></label>
+      </div>
+
+      <h2 style="margin-top:8px">Series mapping</h2>
+      <p class="muted" style="margin:-6px 0 10px">
+        Each series code maps to the stile model used for it and the drawing
+        exported from it. A series with a model but no drawing still runs — it
+        just produces no drawing for that series.
+      </p>
+      <table id="seriesTable">
+        <thead><tr>
+          <th style="width:120px">Series</th><th>Stile model</th>
+          <th>Stile drawing</th><th style="width:90px"></th>
+        </tr></thead>
+        <tbody id="seriesBody"></tbody>
+      </table>
+      <button class="small" id="seriesAdd" style="margin-top:10px">Add series</button>
+
+      <div class="btns" style="margin-top:14px">
+        <button class="primary" id="cfgSave">Save configuration</button>
+        <button id="cfgApply">Apply now (no restart)</button>
+        <button id="cfgReload">Discard changes</button>
+      </div>
+      <div id="hubNames" style="margin-top:14px"></div>
+    </div>
+
+
+    <div class="card full">
+      <h2>Recent orders</h2>
+      <div id="orders" class="muted">loading…</div>
+    </div>
+
+    <div class="card full">
+      <h2>Live log <button class="small" id="logRefresh" style="float:right">Refresh</button></h2>
+      <pre id="log">loading…</pre>
+    </div>
+
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+let cfgCache = null;
+
+
+
+/* ---------- status ---------- */
+
+const STATE_LOOK = {
+  monitoring:{d:'ok',   t:'Monitoring'},
+  processing:{d:'ok',   t:'Processing'},
+  paused:    {d:'warn', t:'Paused'},
+  stopping:  {d:'warn', t:'Stopping'},
+  stopped:   {d:'',     t:'Stopped'},
+  restarting:{d:'warn', t:'Restarting'},
+  stale:     {d:'bad',  t:'Stale — no heartbeat'},
+  not_running:{d:'bad', t:'Fusion not running'},
+  unknown:   {d:'',     t:'Unknown'}
+};
+
+function meter(el, value, max, warnAt, badAt){
+  const pct = max ? Math.min(100, (value / max) * 100) : 0;
+  el.style.width = pct + '%';
+  el.className = pct >= (badAt||90) ? 'bad' : pct >= (warnAt||70) ? 'warn' : '';
+}
+
+async function refreshStatus(){
+  const {ok, data} = await api('/api/status');
+  if(!ok){
+    $('hdrState').textContent = 'service unreachable';
+    $('hdrDot').className = 'dot bad';
+    return;
+  }
+  const look = STATE_LOOK[data.effective_state] || STATE_LOOK.unknown;
+  $('hdrDot').className = 'dot ' + look.d;
+  $('hdrState').textContent = look.t;
+  $('hdrClock').textContent = data.server_time;
+
+  const s = data.status || {};
+  const proc = (data.processes || [])[0] || {};
+  $('hdrMeta').textContent = data.fusion_running
+    ? `pid ${proc.Id} · ${proc.Threads} threads · ${proc.MemoryMB} MB`
+    : 'no Fusion process';
+
+  const threads = proc.Threads != null ? proc.Threads : s.thread_count;
+  const tMax = s.thread_restart_threshold || 4500;
+  $('hThreads').textContent = threads != null ? `${threads} / ${tMax}` : '—';
+  meter($('mThreads'), threads || 0, tMax);
+
+  const mem = proc.MemoryMB != null ? proc.MemoryMB : s.memory_mb;
+  const mMax = s.memory_restart_threshold_mb || 12000;
+  $('hMem').textContent = mem != null ? `${mem} / ${mMax} MB` : '—';
+  meter($('mMem'), mem || 0, mMax);
+
+  const age = data.heartbeat_age_seconds;
+  $('hBeat').textContent = age == null ? '—' : age + 's ago';
+  $('hPid').textContent = proc.Id || s.pid || '—';
+  $('hMode').textContent = data.run_mode || '—';
+  $('hVer').textContent = s.version || '—';
+
+  const p = data.progress || {};
+  $('oId').textContent = p.order_id || s.current_order || '—';
+  $('oComp').textContent = p.component || '—';
+  $('oStep').textContent = p.step || '—';
+  $('oQueue').textContent = s.queue_size != null ? s.queue_size : '—';
+  $('oSession').textContent =
+    (s.session_completed != null) ? `${s.session_completed} / ${s.session_failed}` : '—';
+  if(p.total){
+    meter($('mProg'), p.index || 0, p.total, 999, 999);
+    $('oProg').textContent = `component ${p.index} of ${p.total}`;
+  } else {
+    $('mProg').style.width = '0%';
+    $('oProg').textContent = '—';
+  }
+
+  // Command feedback: a queued graceful command that never gets acked means
+  // the add-in is not servicing its timer, which is worth saying out loud.
+  const c = data.last_command;
+  const note = $('ctlNote');
+  if(!c){ note.innerHTML = ''; }
+  else if(c.state === 'pending'){
+    note.innerHTML = `<div class="note warn">"${c.command}" sent — waiting for the add-in to pick it up.</div>`;
+  } else if(c.state === 'no_response'){
+    note.innerHTML = `<div class="note bad">"${c.command}" was never acknowledged. Fusion may be wedged — use Kill or Restart.</div>`;
+  } else {
+    note.innerHTML = `<div class="note ok">${c.command}: ${c.message || c.state}</div>`;
+  }
+
+  // Keep the hold checkbox in sync, but never fight the user mid-click.
+  if(document.activeElement !== $('holdOnStart')){
+    $('holdOnStart').checked = !!data.hold_on_start;
+  }
+
+  const running = data.fusion_running;
+  document.querySelector('[data-act=start]').disabled = running;
+  ['pause','resume','kill','restart'].forEach(a => {
+    document.querySelector(`[data-act=${a}]`).disabled = !running;
+  });
+}
+
+/* ---------- control ---------- */
+
+const CONFIRM = {
+  kill:'Force-close Fusion? An order in progress will be dropped (completed components are checkpointed).',
+  restart:'Restart Fusion? An order in progress will be dropped (completed components are checkpointed).'
+};
+
+document.querySelectorAll('[data-act]').forEach(btn => {
+  btn.addEventListener('click', async () => {
+    const act = btn.dataset.act;
+    if(CONFIRM[act] && !confirm(CONFIRM[act])) return;
+    btn.disabled = true;
+    const {data} = await api('/api/control', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({action: act})
+    });
+    toast(data.message || 'done', data.ok ? 'ok' : 'bad');
+    setTimeout(refreshStatus, 900);
+  });
+});
+
+/* ---------- folders ---------- */
+
+async function refreshFolders(){
+  const {data} = await api('/api/folders');
+  const local = data.can_open_locally;
+  $('folders').innerHTML = (data.folders || []).map(f => `
+    <div class="folder">
+      <div style="min-width:0">
+        <div>${f.label} ${f.exists
+            ? `<span class="muted">· ${f.count == null ? '' : f.count + ' items'}</span>`
+            : '<span class="muted" style="color:var(--bad)">· missing</span>'}</div>
+        <div class="p">${f.path}</div>
+      </div>
+      <div style="flex:none">
+        ${local ? `<button class="small" data-open="${encodeURIComponent(f.path)}">Open</button>` : ''}
+        <button class="small" data-copy="${encodeURIComponent(f.path)}">Copy</button>
+      </div>
+    </div>`).join('');
+
+  $('folders').querySelectorAll('[data-open]').forEach(b => {
+    b.onclick = async () => {
+      const {data} = await api('/api/open-folder', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({path: decodeURIComponent(b.dataset.open)})
+      });
+      toast(data.message, data.ok ? 'ok' : 'bad');
+    };
+  });
+  $('folders').querySelectorAll('[data-copy]').forEach(b => {
+    b.onclick = async () => {
+      const path = decodeURIComponent(b.dataset.copy);
+      try { await navigator.clipboard.writeText(path); toast('Path copied', 'ok'); }
+      catch(e){ prompt('Copy this path:', path); }
+    };
+  });
+}
+
+/* ---------- config ---------- */
+
+let hubCache = {available:false, models:[], drawings:[], folders:[], projects:[]};
+
+
+
+/* Series rows pair the model and the drawing for one code on a single line,
+   so the mapping is read across rather than by matching keys between two
+   separate lists. */
+/* Every name field is a <select> built from the hub scan. Three things have to
+   stay true or the picker quietly loses data:
+     - a value already in the config must survive even when it is NOT in the
+       hub (that is the broken state the user is here to fix, so it must be
+       visible and selected, not silently blanked),
+     - optional fields need an explicit "none",
+     - files in the chosen folder come first, but everything else in the
+       project stays selectable, because the add-in's lookup also searches the
+       project root and nested folders. */
+function optionsFor(type, current, allowNone){
+  const folder = $('c_folder_name') ? $('c_folder_name').value : '';
+  const all = (hubCache.files || []).filter(f => f.type === type);
+  const names = new Set(all.map(f => f.name));
+  const here = [...new Set(all.filter(f => f.folder === folder).map(f => f.name))].sort();
+  const away = [...new Set(all.filter(f => f.folder !== folder).map(f => f.name))].sort();
+  const opt = n => `<option value="${esc(n)}"${n === current ? ' selected' : ''}>${esc(n)}</option>`;
+
+  let html = allowNone
+    ? `<option value=""${current ? '' : ' selected'}>&mdash; none &mdash;</option>`
+    : (current ? '' : `<option value="" selected>&mdash; select &mdash;</option>`);
+
+  if(here.length) html += `<optgroup label="In ${esc(folder || 'folder')}">${here.map(opt).join('')}</optgroup>`;
+  if(away.length) html += `<optgroup label="Elsewhere in project">${away.map(opt).join('')}</optgroup>`;
+
+  if(current && !names.has(current)){
+    html += `<optgroup label="${hubCache.available
+      ? 'Current value — NOT found in hub'
+      : 'Current value — hub not scanned yet'}">${opt(current)}</optgroup>`;
+  }
+  return html;
+}
+
+function seriesRow(code, model, drawing){
+  return `<tr>
+    <td><input value="${esc(code)}" data-f="code" placeholder="3082"></td>
+    <td><select data-f="model">${optionsFor('model', model, false)}</select></td>
+    <td><select data-f="drawing">${optionsFor('drawing', drawing, true)}</select></td>
+    <td><button class="small" data-delrow>Remove</button></td>
+  </tr>`;
+}
+
+function renderSeries(models, drawings){
+  const codes = [...new Set([...Object.keys(models||{}), ...Object.keys(drawings||{})])].sort();
+  $('seriesBody').innerHTML = codes.map(c =>
+    seriesRow(c, (models||{})[c] || '', (drawings||{})[c] || '')).join('');
+  bindSeriesRows();
+}
+
+function bindSeriesRows(){
+  $('seriesBody').querySelectorAll('[data-delrow]').forEach(b => {
+    b.onclick = () => { b.closest('tr').remove(); markStale(); };
+  });
+  $('seriesBody').querySelectorAll('input').forEach(i => { i.oninput = markStale; });
+  $('seriesBody').querySelectorAll('select').forEach(s => { s.onchange = markStale; });
+}
+
+$('seriesAdd').onclick = () => {
+  $('seriesBody').insertAdjacentHTML('beforeend', seriesRow('', '', ''));
+  bindSeriesRows();
+};
+
+function collectSeries(){
+  const models = {}, drawings = {};
+  $('seriesBody').querySelectorAll('tr').forEach(tr => {
+    const code = tr.querySelector('[data-f=code]').value.trim();
+    if(!code) return;
+    const m = tr.querySelector('[data-f=model]').value.trim();
+    const d = tr.querySelector('[data-f=drawing]').value.trim();
+    if(m) models[code] = m;
+    if(d) drawings[code] = d;
+  });
+  return {models, drawings};
+}
+
+/* Warn about any configured name the last hub scan did not contain. This is
+   the failure that produced a whole run with zero drawings: the names looked
+   fine, nothing in the hub matched them, and the pipeline degraded silently. */
+function checkAgainstHub(){
+  if(!hubCache.available) { $('cfgNote').innerHTML = ''; return; }
+  const known = new Set([...hubCache.models, ...hubCache.drawings]);
+  const missing = [];
+  const check = (label, value) => {
+    if(value && !known.has(value)) missing.push(`${label}: "${esc(value)}"`);
+  };
+  check('Door model', $('c_door_model').value.trim());
+  check('Door drawing', $('c_door_drawing').value.trim());
+  check('Panel model', $('c_panel_model').value.trim());
+  check('Panel drawing', $('c_panel_drawing').value.trim());
+  const {models, drawings} = collectSeries();
+  Object.entries(models).forEach(([c,v]) => check(`Stile model ${c}`, v));
+  Object.entries(drawings).forEach(([c,v]) => check(`Stile drawing ${c}`, v));
+
+  $('cfgNote').innerHTML = missing.length
+    ? `<div class="note bad"><b>Not present in the last hub scan</b> — these
+        will not resolve, and anything unresolved silently produces no output:
+        <br><span class="muted">${missing.join('<br>')}</span></div>`
+    : `<div class="note ok">Every configured name was present in the last hub scan.</div>`;
+}
+
+function markStale(){ checkAgainstHub(); }
+
+/* The config is only read at monitor start. Saying so once on the save button
+   is not enough -- an edit that never gets loaded looks identical to one that
+   did, for days. */
+function renderLoadState(ls){
+  const el = $('cfgLoadState');
+  if(!ls || !ls.known){ el.innerHTML = ''; return; }
+  if(ls.stale){
+    el.innerHTML = `<div class="note bad"><b>Saved but NOT in effect.</b>
+      Fusion is still running with the configuration it read at
+      ${esc(ls.loaded_at_human || 'startup')}. Orders will keep using the old
+      model and drawing names until you restart Fusion.
+      <br><span class="muted">That session resolved: ${esc(ls.resolved || 'unknown')}</span></div>`;
+  } else {
+    el.innerHTML = `<div class="note ok">Live — this configuration is the one
+      Fusion loaded at ${esc(ls.loaded_at_human || 'startup')}.
+      <br><span class="muted">${esc(ls.resolved || '')}</span></div>`;
+  }
+}
+
+/* Rebuild the four name dropdowns, preserving whatever is selected. Called on
+   load, after a scan, and whenever the folder changes -- the folder decides
+   which files are offered first. */
+function renderPickers(values){
+  const cur = values || {
+    door_model:   $('c_door_model').value,
+    door_drawing: $('c_door_drawing').value,
+    panel_model:  $('c_panel_model').value,
+    panel_drawing:$('c_panel_drawing').value,
+  };
+  $('c_door_model').innerHTML    = optionsFor('model',   cur.door_model,    false);
+  $('c_door_drawing').innerHTML  = optionsFor('drawing', cur.door_drawing,  true);
+  $('c_panel_model').innerHTML   = optionsFor('model',   cur.panel_model,   false);
+  $('c_panel_drawing').innerHTML = optionsFor('drawing', cur.panel_drawing, true);
+}
+
+function renderFolders(current){
+  const names = [...new Set((hubCache.folders || []).map(f => f.name))];
+  if(current && !names.includes(current)) names.unshift(current);
+  $('c_folder_name').innerHTML = names.length
+    ? names.map(n =>
+        `<option value="${esc(n)}"${n === current ? ' selected' : ''}>${esc(n)}</option>`).join('')
+    : `<option value="${esc(current || '')}" selected>${esc(current || '(scan to list folders)')}</option>`;
+}
+
+function renderHubBar(){
+  const h = hubCache;
+  if(!h.available){
+    $('hubState').innerHTML = '<span style="color:var(--warn)">never scanned — ' +
+      'pickers are empty until you scan</span>';
+  } else if(h.error){
+    $('hubState').innerHTML = `<span style="color:var(--bad)">${esc(h.error)}</span>`;
+  } else {
+    const mins = h.age_seconds == null ? '?' : Math.round(h.age_seconds / 60);
+    $('hubState').innerHTML =
+      `${h.models.length} model(s), ${h.drawings.length} drawing(s) in ` +
+      `"${esc(h.project_name)}" · <span class="muted">scanned ${mins} min ago</span>`;
+  }
+
+  const sel = $('c_project_name');
+  // Prefer what is selected right now over the saved config: this re-runs on
+  // every hub poll, and rebuilding from cfgCache would silently revert a
+  // project the user just picked.
+  const current = sel.value || (cfgCache ? (cfgCache.project_name || '') : '');
+  const opts = [...new Set([...(h.projects || []), current].filter(Boolean))];
+  sel.innerHTML = opts.map(p =>
+    `<option value="${esc(p)}"${p === current ? ' selected' : ''}>${esc(p)}</option>`).join('')
+    || `<option value="">(scan to list projects)</option>`;
+}
+
+async function loadConfig(){
+  const {data} = await api('/api/config');
+  cfgCache = data.config || {};
+  hubCache = data.hub || {available:false, models:[], drawings:[], folders:[], projects:[]};
+
+  renderLoadState(data.load_state);
+  renderHubBar();
+  // Folder first: the name pickers group their options around it.
+  renderFolders(cfgCache.folder_name || '');
+  renderPickers({
+    door_model:    cfgCache.door_model || '',
+    door_drawing:  cfgCache.door_drawing || '',
+    panel_model:   cfgCache.panel_model || '',
+    panel_drawing: cfgCache.panel_drawing || '',
+  });
+  renderSeries(cfgCache.stile_models, cfgCache.stile_drawings);
+
+  $('c_folder_name').onchange = () => { renderPickers(); renderSeriesPreserving(); markStale(); };
+  ['c_door_model','c_door_drawing','c_panel_model','c_panel_drawing']
+    .forEach(id => { $(id).onchange = markStale; });
+
+  checkAgainstHub();
+  $('hubNames').innerHTML = '';
+}
+
+/* Rebuild the series dropdowns after a folder change without losing what is
+   selected in each row. Rebuilt from the raw rows rather than collectSeries(),
+   which drops incomplete entries -- otherwise a row you had just added and not
+   finished filling in would disappear when you changed folder. */
+function renderSeriesPreserving(){
+  const rows = [...$('seriesBody').querySelectorAll('tr')].map(tr => ({
+    code:    tr.querySelector('[data-f=code]').value,
+    model:   tr.querySelector('[data-f=model]').value,
+    drawing: tr.querySelector('[data-f=drawing]').value,
+  }));
+  $('seriesBody').innerHTML = rows.map(r => seriesRow(r.code, r.model, r.drawing)).join('');
+  bindSeriesRows();
+}
+
+/* Adopt a newer snapshot whenever one appears, not just while a scan poll is
+   running. A scan is queued, not immediate -- if the add-in is mid-order, or
+   the monitor has not started yet, it can land well after the click's poll has
+   given up, and without this the finished results stayed invisible until a
+   manual page reload. Current selections are preserved, so this is safe to run
+   underneath someone editing the form. */
+async function refreshHubIfChanged(){
+  const {ok, data} = await api('/api/config');
+  if(!ok) return;
+  renderLoadState((data || {}).load_state);
+  const h = (data || {}).hub || {};
+  if(!h.available) return;
+
+  if(h.captured_at_human === hubCache.captured_at_human){
+    renderHubBar();   // same scan, just refresh the "x min ago" text
+    return;
+  }
+
+  const keep = {
+    door_model:   $('c_door_model').value,
+    door_drawing: $('c_door_drawing').value,
+    panel_model:  $('c_panel_model').value,
+    panel_drawing:$('c_panel_drawing').value,
+  };
+  const folder = $('c_folder_name').value;
+  hubCache = h;
+  renderHubBar();
+  renderFolders(folder);
+  renderPickers(keep);
+  renderSeriesPreserving();
+  checkAgainstHub();
+  $('hubScan').disabled = false;
+  toast(h.error ? 'Hub scan finished with an error' : 'Hub scan results loaded',
+        h.error ? 'bad' : 'ok');
+}
+
+/* Scanning needs Fusion: only the add-in can reach app.data. The scan is
+   queued through the same command channel as pause/resume and runs at the next
+   idle moment, so poll for the snapshot to change rather than blocking. */
+$('hubScan').onclick = async () => {
+  const project = $('c_project_name').value || null;
+  $('hubScan').disabled = true;
+  $('hubState').textContent = 'requesting scan…';
+  const {data} = await api('/api/hub/refresh', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({project})
+  });
+  toast(data.message, data.ok ? 'ok' : 'bad');
+  if(!data.ok){ $('hubScan').disabled = false; renderHubBar(); return; }
+
+  const before = hubCache.captured_at_human || null;
+  let waited = 0;
+  const poll = setInterval(async () => {
+    waited += 3;
+    await refreshHubIfChanged();
+    if(hubCache.captured_at_human !== before){
+      clearInterval(poll);              // results arrived; already rendered
+    } else if(waited >= 180){
+      clearInterval(poll);
+      $('hubScan').disabled = false;
+      // Not a failure: the scan only runs when the add-in reaches an idle
+      // moment. The background poll keeps watching and will load the results
+      // whenever they land, so say that rather than declaring it dead.
+      $('hubState').innerHTML = '<span style="color:var(--warn)">still waiting ' +
+        '— the scan runs when the add-in next goes idle. Results will load ' +
+        'automatically; no need to click again.</span>';
+    }
+  }, 3000);
+};
+
+$('cfgReload').onclick = () => { loadConfig(); toast('Reloaded from disk'); };
+
+/* Apply the saved config to the RUNNING session. Without this the only way to
+   pick up an edit was a Fusion restart, and forgetting cost three days of
+   door and panel output going to a stale local fallback. */
+$('cfgApply').onclick = async () => {
+  $('cfgApply').disabled = true;
+  const {data} = await api('/api/control', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({action:'reload_config'})
+  });
+  toast(data.message || 'requested', data.ok ? 'ok' : 'bad');
+  if(!data.ok){ $('cfgApply').disabled = false; return; }
+  // The add-in applies it at its next idle moment; the config poll picks up
+  // the new stamp and flips the banner to "Live".
+  let waited = 0;
+  const poll = setInterval(async () => {
+    waited += 3;
+    const r = await api('/api/config');
+    const ls = (r.data || {}).load_state || {};
+    if(ls.known && ls.stale === false){
+      clearInterval(poll); $('cfgApply').disabled = false;
+      renderLoadState(ls);
+      toast('Configuration is now live: ' + (ls.resolved || ''), 'ok');
+    } else if(waited >= 120){
+      clearInterval(poll); $('cfgApply').disabled = false;
+      toast('Still waiting — it applies when the add-in next goes idle', 'bad');
+    }
+  }, 3000);
+};
+
+/* Hold-on-start is written straight to disk by the service, so it can be set
+   with Fusion closed — which is the only way to get a quiet startup. */
+$('holdOnStart').onchange = async () => {
+  const paused = $('holdOnStart').checked;
+  const {data} = await api('/api/pause-state', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({paused})
+  });
+  toast(data.message || '', data.ok ? 'ok' : 'bad');
+};
+
+$('cfgSave').onclick = async () => {
+  const series = collectSeries();
+  const payload = {
+    project_name: $('c_project_name').value.trim(),
+    folder_name:  $('c_folder_name').value.trim(),
+    door_model:   $('c_door_model').value.trim(),
+    door_drawing: $('c_door_drawing').value.trim(),
+    panel_model:  $('c_panel_model').value.trim(),
+    panel_drawing:$('c_panel_drawing').value.trim(),
+    stile_models: series.models,
+    stile_drawings: series.drawings
+  };
+  const {data} = await api('/api/config', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({config: payload})
+  });
+  if(data.ok){
+    $('cfgNote').innerHTML = `<div class="note ok">${data.message}</div>`;
+    toast('Configuration saved', 'ok');
+    refreshHubIfChanged();   // repaints the "saved but NOT in effect" banner
+  } else {
+    $('cfgNote').innerHTML =
+      `<div class="note bad">Not saved:<br>${(data.errors||[data.message]).join('<br>')}</div>`;
+    toast('Configuration rejected', 'bad');
+  }
+};
+
+/* ---------- orders + log ---------- */
+
+async function refreshOrders(){
+  const {data} = await api('/api/orders');
+  const rows = data.orders || [];
+  if(!rows.length){ $('orders').innerHTML = '<span class="muted">No orders recorded yet.</span>'; return; }
+  const keys = ['order_id','result','components','completed','failed','duration_s','finished_human','finished'];
+  $('orders').innerHTML = `<table><thead><tr>${
+    keys.filter(k => rows.some(r => r[k] !== undefined)).map(k => `<th>${k}</th>`).join('')
+  }</tr></thead><tbody>${
+    rows.map(r => `<tr>${keys.filter(k => rows.some(x => x[k] !== undefined))
+      .map(k => `<td>${r[k] === undefined ? '' : String(r[k])}</td>`).join('')}</tr>`).join('')
+  }</tbody></table>`;
+}
+
+async function refreshLog(){
+  const {data} = await api('/api/logs?lines=200');
+  $('log').textContent = (data.lines || []).join('\n') || '(empty)';
+  $('log').scrollTop = $('log').scrollHeight;
+}
+$('logRefresh').onclick = refreshLog;
+
+/* ---------- boot ---------- */
+
+
+
+
+refreshStatus(); refreshFolders(); loadConfig(); refreshOrders(); refreshLog();
+setInterval(refreshStatus, 3000);
+setInterval(refreshFolders, 30000);
+setInterval(refreshOrders, 15000);
+setInterval(refreshLog, 10000);
+setInterval(refreshHubIfChanged, 15000);
+</script>
+</body>
+</html>

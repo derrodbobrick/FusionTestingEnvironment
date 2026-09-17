@@ -1,0 +1,1586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inspection &amp; Testing</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>Inspection &amp; Testing</h1>
+  <span class="pill"><i class="dot" id="hdrDot"></i><span id="hdrState">records</span></span>
+  <span class="muted" id="hdrMeta"></span>
+  <span style="flex:1"></span>
+  <a class="navlink operator-only" href="/">Pipeline</a>
+  <a class="navlink active" href="/inspection">Inspection &amp; testing</a>
+  <a class="navlink operator-only" href="/generate">Generate inputs</a>
+  <a class="navlink whopill" href="#" id="whoAmI" title="Switch to a different tester">
+    <span class="userpick-i" id="whoInitials">?</span><span id="whoName">choose</span></a>
+  <a class="navlink" href="#" id="adminBtn" title="Scenario and roster setup">Admin</a>
+  <span class="muted" id="hdrClock"></span>
+</header>
+
+<div class="wrap">
+  <div class="grid">
+    <div class="card full" id="inspectCard">
+      <div id="insCrumb" class="crumb"></div>
+      <div id="insSeries" style="display:none"></div>
+      <div id="insScenarios" style="display:none"></div>
+      <div id="insScenario" style="display:none"></div>
+      <div id="insPick" style="display:none"></div>
+      <div id="insWiz" style="display:none"></div>
+      <div id="insAdmin" style="display:none"></div>
+      <div id="insNote"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+async function insHeader(){
+  const r = await api('/api/status');
+  if(!r.ok) return;
+  const d = r.data;
+  const running = d.fusion_running;
+  $('hdrDot').className = 'dot ' + (running ? (d.effective_state === 'paused' ? 'warn' : 'ok') : 'bad');
+  $('hdrState').textContent = running ? ('pipeline ' + d.effective_state) : 'pipeline not running';
+  $('hdrClock').textContent = d.server_time || '';
+}
+/* Header polling is started from the boot block at the foot of this file, once
+   the deployment is known -- there is no pipeline to poll on a tester's PC. */
+
+/* ---------- CNC routing view ---------- */
+/* Renders the parsed toolpath as an SVG plot beside the drawing. Setups are
+   drawn separately: a door's two faces sit in different work offsets, so
+   overlaying them would show a part twice its real width. */
+let routeCache = {};
+
+function polyD(pts){
+  return 'M' + pts.map(p => p[0] + ' ' + (-p[1])).join(' L');
+}
+
+function tpPath(seg){
+  // Material removal is red; everything else is approach travel. The parser
+  // splits each cut at the part boundary, so a lead-in running off the edge is
+  // never coloured as though it were cutting.
+  let out = '';
+  (seg.out_paths || []).forEach(run => {
+    out += '<path class="' + (seg.kind === 'rapid' ? 'rapid' : 'approach') +
+           '" d="' + polyD(run) + '" />';
+  });
+  (seg.in_paths || []).forEach(run => {
+    out += '<path class="inpart" d="' + polyD(run) + '" />';
+  });
+  if(!(seg.in_paths || []).length && !(seg.out_paths || []).length){
+    const pts = (seg.points || []).filter(q => q[0] != null && q[1] != null);
+    if(pts.length > 1) out += '<path class="' + seg.kind + '" d="' + polyD(pts) + '" />';
+  }
+  return out;
+}
+
+function tpPlot(ops, sheet, extents, height, bounds, frameToOps){
+  // One plot for one toolpath.
+  //
+  // frameToOps decides what the picture is scaled to. Framing on the whole
+  // component makes a 0.441"-wide notch a hairline on a 100" stile, which is
+  // exactly the feature someone is trying to check; framing on the toolpath
+  // shows it at a size you can judge. The component rectangle is still drawn
+  // either way and simply clips at the edge of the view, so the cut keeps its
+  // context without being shrunk to fit it.
+  let e = extents || {};
+  if(bounds && e.min_x != null && !frameToOps){
+    e = {min_x: Math.min(bounds.min_x, e.min_x), max_x: Math.max(bounds.max_x, e.max_x),
+         min_y: Math.min(bounds.min_y, e.min_y), max_y: Math.max(bounds.max_y, e.max_y)};
+    e.width = e.max_x - e.min_x; e.height = e.max_y - e.min_y;
+  }
+  if(e.min_x == null) return '<div class="muted">No geometry.</div>';
+  // SVG Y grows downward while G-code Y grows up, so Y is negated throughout.
+  const pad = Math.max((e.width || 1), (e.height || 1)) * 0.04 + 0.2;
+  const vb = [e.min_x - pad, -(e.max_y) - pad,
+              (e.width || 1) + pad * 2, (e.height || 1) + pad * 2];
+  let body = '';
+  if(bounds){
+    // The component, placed by work offset: G57 sits in +X, G58/G59 in -X,
+    // both in +Y.
+    body += '<rect class="part" x="' + bounds.min_x + '" y="' + (-bounds.max_y) +
+            '" width="' + (bounds.max_x - bounds.min_x) +
+            '" height="' + (bounds.max_y - bounds.min_y) + '"/>';
+  }
+  const dot = Math.max((e.width || 10), 1) * 0.004 + 0.03;
+  ops.forEach(op => {
+    op.segments.forEach(seg => { body += tpPath(seg); });
+    (op.holes || []).forEach(h => {
+      body += '<circle class="hole" cx="' + h.x + '" cy="' + (-h.y) + '" r="' + dot + '"/>';
+    });
+  });
+  return '<svg class="tp" viewBox="' + vb.join(' ') +
+         '" preserveAspectRatio="xMidYMid meet" style="height:' + height + 'px">' +
+         body + '</svg>';
+}
+
+function tpLegend(){
+  return '<div class="legend">' +
+    '<span><i style="border-color:#ff4d4d;border-top-width:3px"></i>cutting the part</span>' +
+    '<span><i style="border-color:#7d8794"></i>approach outside the part</span>' +
+    '<span><i style="border-color:#5b6673;border-top-style:dashed"></i>rapid</span>' +
+    '<span><span style="color:#ff9b93">&#9679;</span> drilled hole</span>' +
+    '<span><i style="border-color:#3d4854"></i>component</span></div>';
+}
+
+function opExtents(op){
+  // Each operation is framed on its own geometry, so a small notch is not lost
+  // inside a plot scaled to the full part.
+  let xs = [], ys = [];
+  op.segments.forEach(sg => sg.points.forEach(p => {
+    if(p[0] != null){ xs.push(p[0]); ys.push(p[1]); }
+  }));
+  (op.holes || []).forEach(h => { xs.push(h.x); ys.push(h.y); });
+  if(!xs.length) return {};
+  const minx = Math.min(...xs), maxx = Math.max(...xs);
+  const miny = Math.min(...ys), maxy = Math.max(...ys);
+  return {min_x: minx, max_x: maxx, min_y: miny, max_y: maxy,
+          width: Math.max(maxx - minx, 0.001), height: Math.max(maxy - miny, 0.001)};
+}
+
+function num(v, unit){
+  return (v == null || v === '') ? '&mdash;' : (v + (unit || ''));
+}
+
+async function insRenderRouting(pane, cid){
+  const t = insState.test;
+  const key = t.test_id + '|' + cid;
+  pane.insertAdjacentHTML('beforeend',
+    '<h2 style="margin-top:14px">Toolpath</h2><div id="tpBox" class="muted">parsing G-code&hellip;</div>');
+
+  if(!routeCache[key]){
+    const r = await api('/api/tests/gcode?id=' + encodeURIComponent(t.test_id) +
+                        '&component=' + encodeURIComponent(cid));
+    routeCache[key] = r.data || {error: 'failed'};
+  }
+  const g = routeCache[key];
+  const box = $('tpBox');
+  if(!box) return;
+  if(g.error){ box.innerHTML = '<span class="muted">' + esc(g.error) + '</span>'; return; }
+
+  const warn = (g.warnings || []).length
+    ? '<div class="note bad"><b>Automatic checks flagged this program:</b><br>' +
+      g.warnings.map(w => esc(w.message)).join('<br>') + '</div>'
+    : '<div class="note ok">Automatic checks found nothing: cut extents fit the sheet, ' +
+      'and no rapid moves occur at cutting depth.</div>';
+
+  const tools = (g.tools || []).map(x =>
+    '<tr><td>' + esc(x.tool) + '</td><td>' + x.diameter + '"</td><td>' +
+    x.zmin + '</td><td>' + esc(x.kind) + '</td></tr>').join('');
+
+  // One card per toolpath -- its own picture, its own numbers.
+  //
+  // There is deliberately no combined plot and no roll-up. Left rabbet in and
+  // right rabbet out are separate operations cutting different edges, and a
+  // single "cut on material" summing the two cannot be checked against
+  // anything: the shop's figures are per toolpath, so the display is too.
+  const cards = [];
+  (g.setups || []).forEach(st => {
+    (st.operations || []).forEach(op => {
+      const holes = (op.holes || []).length;
+      const side = st.bounds ? st.bounds.side + '-hand workstop' : '';
+      cards.push('<div class="tpcard">' +
+        '<div class="tpcard-h"><b>' + esc(op.name) + '</b>' +
+          '<span class="muted">' + esc(op.tool || '') +
+          (op.tool_diameter ? ' &middot; ' + op.tool_diameter + '" dia' : '') +
+          '</span></div>' +
+        '<div class="tpcard-sub">setup ' + st.index + ' &middot; ' +
+          esc(st.offset || '') + (side ? ' &middot; ' + esc(side) : '') +
+          ' &middot; ' + esc(st.reason || '') + '</div>' +
+
+        // Framed on this operation's own geometry so a 0.441" notch fills the
+        // card instead of vanishing inside a plot scaled to the whole part.
+        // The component outline is still drawn and simply clips at the edge of
+        // the view, which keeps the cut in context without shrinking it.
+        tpPlot([op], null, opExtents(op), 190, st.bounds, true) +
+
+        '<div class="tpkey">' +
+          '<div>Cut on material<b class="hero">' + num(op.cut_on_material, '"') + '</b></div>' +
+          '<div>Extent X<b>' + (op.cut_extent_x != null ? op.cut_extent_x + '"' : '&mdash;') + '</b></div>' +
+          '<div>Extent Y<b>' + (op.cut_extent_y != null ? op.cut_extent_y + '"' : '&mdash;') + '</b></div>' +
+        '</div>' +
+
+        '<table class="opstats"><tbody>' +
+        '<tr><td>Cut on material, how</td><td>' +
+          num(op.linear_on_material, '" linear') +
+          (op.arcs_on_material
+            ? ' + ' + op.arcs_on_material + ' insertion arc' +
+              (op.arcs_on_material > 1 ? 's' : '') + ' @ 1.136"'
+            : '') + '</td></tr>' +
+        '<tr><td>Outside the part</td><td>' + num(op.cut_outside_part, '"') + '</td></tr>' +
+        '<tr><td>Lead in / out</td><td>' + num(op.lead_in_length, '"') + ' / ' +
+          num(op.lead_out_length, '"') + '</td></tr>' +
+        '<tr><td>Total travel</td><td>' + num(op.cut_length, '"') + '</td></tr>' +
+        (op.drill_length ? '<tr><td>of which plunging</td><td>' +
+          num(op.drill_length, '"') + '</td></tr>' : '') +
+        '<tr><td>Time at feed</td><td>' + num(op.cut_minutes, ' min') + '</td></tr>' +
+        '<tr><td>Swept footprint</td><td>' + num(op.swept_area, ' sq in') + '</td></tr>' +
+        '<tr><td>Deepest Z</td><td>' + num(op.min_cut_z) + '</td></tr>' +
+        (holes ? '<tr><td>Holes</td><td>' + holes + '</td></tr>' : '') +
+        '<tr><td>Rapid (air)</td><td>' + num(op.rapid_length, '"') + '</td></tr>' +
+        '</tbody></table></div>');
+    });
+  });
+
+  box.classList.remove('muted');
+  box.innerHTML = warn +
+    '<div class="muted" style="margin:8px 0">' + cards.length + ' toolpath' +
+      (cards.length === 1 ? '' : 's') + ' across ' + g.setup_count + ' setup' +
+      (g.setup_count === 1 ? '' : 's') +
+      ' &middot; sheet ' + ((g.sheet && g.sheet.x) || '?') + '" x ' +
+      ((g.sheet && g.sheet.y) || '?') + '"' +
+      '<br>Each toolpath is measured on its own; nothing below is a total.</div>' +
+    tpLegend() +
+    (cards.length
+      ? '<div class="tpgrid">' + cards.join('') + '</div>'
+      : '<div class="muted">No toolpaths in this program.</div>') +
+    '<h2 style="margin-top:12px">Tools</h2>' +
+    '<table><thead><tr><th>Tool</th><th>Dia</th><th>ZMIN</th><th>Type</th></tr></thead>' +
+    '<tbody>' + tools + '</tbody></table>';
+
+}
+
+
+
+/* ---------- what Fusion determined this component to be ----------
+   Read from the component's own parameter output, so the inspector is told
+   the intended configuration instead of inferring it from the drawing. */
+async function renderDetermined(host, cid){
+  const t = insState.test;
+  host.innerHTML = '<div class="muted">reading parameters&hellip;</div>';
+  const r = await api('/api/tests/config?id=' + encodeURIComponent(t.test_id) +
+                      '&component=' + encodeURIComponent(cid));
+  const c = r.data || {};
+  if(!c.available){
+    host.innerHTML = '<div class="note warn">' +
+      esc(c.error || 'No parameter output for this component.') + '</div>';
+    return;
+  }
+  const rows = (c.items || []).map(i =>
+    '<tr><td>' + esc(i.label) + '</td><td><b>' + esc(i.value) + '</b>' +
+    '<div class="muted" style="font-size:11px">' + esc(i.param) + '</div></td></tr>'
+  ).join('');
+  host.innerHTML =
+    '<div class="determined">' +
+      '<div class="muted" style="margin-bottom:6px">Fusion determined this ' +
+        esc(c.type || 'component') + ' to be' +
+        (c.series ? ' &middot; series ' + esc(c.series) : '') +
+        (c.width && c.height ? ' &middot; ' + c.width + '" x ' + c.height + '"' : '') +
+      '</div>' +
+      '<table class="dettable"><tbody>' + rows + '</tbody></table>' +
+    '</div>';
+}
+
+/* ---------- order layout drawing ----------
+   Supplied by hand, one per ORDER, and shown against each component in turn.
+   Kept per order rather than per inspection so re-inspecting an order does not
+   ask for the same file again. */
+const LAYOUT_ACCEPT = 'application/pdf,image/png,image/jpeg,.pdf,.png,.jpg,.jpeg';
+
+async function uploadLayout(scenarioId, file, onDone){
+  if(!file) return;
+  // A quick client-side check for an obvious mistake; the service decides for
+  // real, from the file's magic bytes.
+  if(!/\.(pdf|png|jpe?g)$/i.test(file.name || '') &&
+     !/^(application\/pdf|image\/(png|jpeg))$/.test(file.type || '')){
+    toast('Upload a PDF, PNG or JPG', 'bad');
+    return;
+  }
+  const box = $('layoutBox');
+  if(box) box.innerHTML = '<div class="muted">uploading ' + esc(file.name) + '&hellip;</div>';
+  let res, data = {};
+  try{
+    // Sent as a raw body rather than multipart: no form parser on the service
+    // side, so there is less to get wrong for a single file.
+    res = await fetch('/api/tests/layout?scenario=' + encodeURIComponent(scenarioId), {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': file.type || 'application/octet-stream'}, body: file
+    });
+    data = await res.json();
+  }catch(e){
+    toast('Upload failed: ' + e, 'bad');
+    return;
+  }
+  if(!res.ok || !data.ok){
+    toast(data.message || 'upload rejected', 'bad');
+    if(box) box.innerHTML = '<div class="note bad">' + esc(data.message || 'upload rejected') + '</div>';
+    return;
+  }
+  toast(data.message, 'ok');
+  if(onDone) onDone();
+}
+
+function layoutPane(scenarioId, info){
+  info = info || {};
+  if(!scenarioId){
+    return '<div class="note warn">This inspection is not attached to a scenario, ' +
+           'so there is no layout drawing to show. Layouts are uploaded per ' +
+           'scenario.</div>';
+  }
+  const url = '/api/tests/layout?scenario=' + encodeURIComponent(scenarioId) +
+              '&v=' + encodeURIComponent(info.uploaded_at || '0');
+  if(info.exists){
+    return '<div class="layouthead"><span class="muted">uploaded ' +
+      esc(info.uploaded_at) + ' &middot; ' + Math.round(info.bytes / 1024) + ' KB</span>' +
+      '<button class="small admin-only inline" id="layoutReplace">Replace</button></div>' +
+      (info.is_image
+        ? '<div class="imgframe"><img src="' + url + '" alt="layout drawing"></div>'
+        : '<iframe src="' + url + '" title="layout drawing for ' +
+          esc(scenarioId) + '"></iframe>') +
+      '<input type="file" id="layoutFile" accept="' + LAYOUT_ACCEPT + '" style="display:none">';
+  }
+  return '<div class="note warn"><b>No layout drawing uploaded for this scenario.</b><br>' +
+    'This check compares each component against the layout for the scenario. ' +
+    'Upload it once and every order and component under this scenario will use it.' +
+    (isAdmin() ? '' : '<br>Uploading it is an admin job &mdash; ask whoever set ' +
+                      'this scenario up.') +
+    '</div>' +
+    '<div class="dropzone admin-only" id="layoutDrop">' +
+      '<div><b>Drop the layout drawing here</b></div>' +
+      '<div class="muted">PDF, PNG or JPG</div>' +
+      '<div class="muted">or</div>' +
+      '<button class="small primary" id="layoutPick">Choose file</button>' +
+      '<input type="file" id="layoutFile" accept="' + LAYOUT_ACCEPT + '" style="display:none">' +
+    '</div>';
+}
+
+function bindLayout(scenarioId, onDone){
+  if(!scenarioId) return;
+  const reload = onDone || (() => {});
+  const file = $('layoutFile');
+  const pick = $('layoutPick');
+  const repl = $('layoutReplace');
+  if(pick) pick.onclick = () => file.click();
+  if(repl) repl.onclick = () => file.click();
+  if(file) file.onchange = () => uploadLayout(scenarioId, file.files[0], reload);
+
+  const drop = $('layoutDrop');
+  if(drop){
+    ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => {
+      e.preventDefault(); drop.classList.add('over');
+    }));
+    ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => {
+      e.preventDefault(); drop.classList.remove('over');
+    }));
+    drop.addEventListener('drop', e => {
+      const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      uploadLayout(scenarioId, f, reload);
+    });
+  }
+}
+
+/* ---------- navigation ----------
+   series -> scenario -> inspection (order @ output run) -> component -> wizard
+
+   The middle levels exist because an order is re-run repeatedly and each run
+   writes fresh output. A scenario groups the orders that form a test case; an
+   inspection underneath names the exact run it was carried out against. */
+let insState = {
+  view: 'series', series: null, scenario: null,
+  test: null, component: null, stepIndex: 0, orders: []
+};
+
+const VIEWS = ['insSeries', 'insScenarios', 'insScenario', 'insPick', 'insWiz', 'insAdmin'];
+const VIEW_EL = {series:'insSeries', scenarios:'insScenarios', scenario:'insScenario',
+                 admin:'insAdmin',
+                 pick:'insPick', wizard:'insWiz'};
+
+function show(view){
+  insState.view = view;
+  VIEWS.forEach(id => { $(id).style.display = (VIEW_EL[view] === id) ? 'block' : 'none'; });
+  renderCrumb();
+}
+
+function renderCrumb(){
+  const bits = ['<a href="#" data-go="series">Series</a>'];
+  if(insState.view === 'admin'){
+    bits.push('<span>Admin</span>');
+    $('insCrumb').innerHTML = bits.join('<span class="sep">&rsaquo;</span>');
+    $('insCrumb').querySelectorAll('[data-go]').forEach(a =>
+      a.onclick = e => { e.preventDefault(); renderSeries(); });
+    return;
+  }
+  if(insState.series){
+    bits.push(insState.view === 'scenarios'
+      ? '<span>' + esc(insState.series) + '</span>'
+      : '<a href="#" data-go="scenarios">' + esc(insState.series) + '</a>');
+  }
+  if(insState.scenario && insState.view !== 'scenarios'){
+    bits.push(insState.view === 'scenario'
+      ? '<span>' + esc(insState.scenario.name) + '</span>'
+      : '<a href="#" data-go="scenario">' + esc(insState.scenario.name) + '</a>');
+  }
+  if(insState.test && (insState.view === 'pick' || insState.view === 'wizard')){
+    const label = insState.test.order_number + ' @ ' + insState.test.run_label;
+    bits.push(insState.view === 'pick'
+      ? '<span>' + esc(label) + '</span>'
+      : '<a href="#" data-go="pick">' + esc(label) + '</a>');
+  }
+  if(insState.view === 'wizard' && insState.component){
+    bits.push('<span>' + esc(insState.component) + '</span>');
+  }
+  $('insCrumb').innerHTML = bits.join('<span class="sep">&rsaquo;</span>');
+  $('insCrumb').querySelectorAll('[data-go]').forEach(a => a.onclick = e => {
+    e.preventDefault();
+    const g = a.dataset.go;
+    if(g === 'series') renderSeries();
+    else if(g === 'scenarios') renderScenarios(insState.series);
+    else if(g === 'scenario') openScenario(insState.scenario.id);
+    else if(g === 'pick') insOpen(insState.test.test_id, 'pick');
+  });
+}
+
+/* ---------- series ---------- */
+
+async function renderSeries(){
+  show('series');
+  const r = await api('/api/series');
+  const list = (r.data || {}).series || [];
+  const sc = await api('/api/scenarios');
+  const counts = {};
+  ((sc.data || {}).scenarios || []).forEach(s => {
+    counts[s.series_id] = (counts[s.series_id] || 0) + 1;
+  });
+
+  $('insSeries').innerHTML =
+    '<h2>Series</h2>' +
+    '<p class="muted" style="margin:0 0 12px">A series is a product family. ' +
+    'Scenarios sit under a series, and inspections sit under a scenario.</p>' +
+    '<div class="pickgrid">' + list.map(s =>
+      '<div class="pickcard" data-series="' + esc(s.id) + '">' +
+      '<div class="pickcard-h"><b>' + esc(s.name || s.id) + '</b>' +
+      '<span class="muted">' + (counts[s.id] || 0) + '</span></div>' +
+      '<div class="muted">' + esc(s.description || '') + '</div>' +
+      '<div class="muted">' + (counts[s.id] || 0) + ' scenario(s)</div></div>'
+    ).join('') + '</div>' +
+    '<div class="addbox admin-only">' +
+      '<h2>Add a series</h2>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+        '<label style="margin:0;max-width:150px"><span>Id</span>' +
+          '<input id="seriesId" placeholder="2X8X"></label>' +
+        '<label style="margin:0;flex:1;min-width:180px"><span>Description</span>' +
+          '<input id="seriesDesc" placeholder="optional"></label>' +
+        '<button class="small primary" id="seriesAdd">Add series</button>' +
+      '</div></div>';
+
+  $('insSeries').querySelectorAll('[data-series]').forEach(el =>
+    el.onclick = () => renderScenarios(el.dataset.series));
+  $('seriesAdd').onclick = async () => {
+    const id = $('seriesId').value.trim();
+    if(!id){ toast('Enter a series id', 'bad'); return; }
+    const r = await api('/api/series/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id, description: $('seriesDesc').value})
+    });
+    if(!(r.data || {}).ok){ toast((r.data||{}).message || 'failed', 'bad'); return; }
+    toast('Series ' + id + ' added', 'ok');
+    renderSeries();
+  };
+}
+
+/* ---------- scenarios in a series ---------- */
+
+/* Scenarios are shown filtered to the signed-in tester by default. An
+   unassigned scenario stays visible to everyone: work nobody has been given is
+   not the same as work that is none of your business, and hiding it is how a
+   scenario ends up untested because each person assumed it was someone
+   else's. */
+let scShowAll = false;
+
+async function renderScenarios(seriesId){
+  insState.series = seriesId;
+  insState.scenario = null;
+  show('scenarios');
+
+  const mine = testerId();
+  const q = '/api/scenarios?series=' + encodeURIComponent(seriesId) +
+            (scShowAll || !mine ? '&all=1' : '&assigned_to=' + encodeURIComponent(mine));
+  const [r, rAll] = await Promise.all([api(q), api('/api/scenarios?series=' +
+                                        encodeURIComponent(seriesId) + '&all=1')]);
+  const list = (r.data || {}).scenarios || [];
+  const total = ((rAll.data || {}).scenarios || []).length;
+  const hidden = Math.max(total - list.length, 0);
+  if(!ROSTER.length) await loadRoster();
+  const nameOf = id => (ROSTER.find(u => u.id === id) || {}).name || id;
+
+  $('insScenarios').innerHTML =
+    '<h2>' + esc(seriesId) + ' &mdash; scenarios</h2>' +
+    (mine
+      ? '<div class="muted" style="margin-bottom:10px">' +
+          (scShowAll
+            ? 'Showing every scenario. '
+            : 'Showing what is assigned to <b>' + esc(testerName()) + '</b>, plus anything unassigned. ') +
+          (hidden || scShowAll
+            ? '<a href="#" id="scToggleAll">' +
+              (scShowAll ? 'show only mine' : 'show all ' + total) + '</a>'
+            : '') + '</div>'
+      : '') +
+    (list.length
+      ? '<div class="pickgrid">' + list.map(s => {
+          const who = (s.assigned_to || []).map(nameOf);
+          return '<div class="pickcard" data-scenario="' + esc(s.id) + '">' +
+          '<div class="pickcard-h"><b>' + esc(s.name) + '</b>' +
+          (s.layout && s.layout.exists ? '<span class="chip pass">layout</span>'
+                                       : '<span class="chip pending">no layout</span>') +
+          '</div>' +
+          '<div class="muted">' + esc(s.description || '') + '</div>' +
+          '<div class="muted">' + s.orders.length + ' order(s): ' +
+            esc(s.orders.slice(0, 3).join(', ')) +
+            (s.orders.length > 3 ? '&hellip;' : '') + '</div>' +
+          '<div class="muted">' + (who.length
+            ? 'assigned to ' + esc(who.join(', '))
+            : '<i>unassigned</i>') + '</div></div>';
+        }).join('') + '</div>'
+      : '<span class="muted">' + (hidden
+          ? 'Nothing in this series is assigned to you.'
+          : 'No scenarios in this series yet.') + '</span>') +
+    '<div class="addbox admin-only">' +
+      '<h2>Add a scenario</h2>' +
+      '<label><span>Name</span><input id="scName" placeholder="Standard door + panel run"></label>' +
+      '<label><span>Description</span><input id="scDesc" placeholder="optional"></label>' +
+      '<label><span>Orders (comma separated IBUS numbers)</span>' +
+        '<input id="scOrders" placeholder="IBUS467506, IBUS467545"></label>' +
+      '<label><span>Assign to (leave empty for everyone)</span>' +
+        assignPicker('scAssign', []) + '</label>' +
+      '<button class="small primary" id="scAdd">Create scenario</button>' +
+    '</div>';
+
+  $('insScenarios').querySelectorAll('[data-scenario]').forEach(el =>
+    el.onclick = () => openScenario(el.dataset.scenario));
+
+  const tog = $('scToggleAll');
+  if(tog) tog.onclick = e => { e.preventDefault(); scShowAll = !scShowAll;
+                               renderScenarios(seriesId); };
+
+  const add = $('scAdd');
+  if(add) add.onclick = async () => {
+    const orders = $('scOrders').value.split(/[,\s]+/).filter(Boolean);
+    const r = await api('/api/scenarios/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({series_id: seriesId, name: $('scName').value,
+                            description: $('scDesc').value, orders,
+                            assigned_to: readAssignPicker('scAssign')})
+    });
+    const d = r.data || {};
+    if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+    toast('Scenario created', 'ok');
+    openScenario(d.result.id);
+  };
+}
+
+/* A checkbox per tester. Deliberately not a multi-select: assignment is read
+   far more often than it is set, and a list of ticked names can be taken in at
+   a glance where a scrolling select cannot. */
+function assignPicker(id, selected){
+  const chosen = new Set(selected || []);
+  if(!ROSTER.length){
+    return '<div class="muted" id="' + id + '">No testers on the roster yet ' +
+           '&mdash; add them under Admin.</div>';
+  }
+  return '<div class="assignbox" id="' + id + '">' + ROSTER.map(u =>
+    '<label class="assignone"><input type="checkbox" value="' + esc(u.id) + '"' +
+    (chosen.has(u.id) ? ' checked' : '') + '> ' + esc(u.name) + '</label>'
+  ).join('') + '</div>';
+}
+
+function readAssignPicker(id){
+  const host = $(id);
+  if(!host) return [];
+  return Array.from(host.querySelectorAll('input[type=checkbox]'))
+    .filter(c => c.checked).map(c => c.value);
+}
+
+/* ---------- one scenario ---------- */
+
+async function openScenario(scenarioId){
+  // The roster turns assignment ids into names; a scenario can be opened
+  // without having passed through the list view first.
+  if(!ROSTER.length) await loadRoster();
+  const r = await api('/api/scenario?id=' + encodeURIComponent(scenarioId));
+  if(!r.ok){ toast('Could not load scenario', 'bad'); return; }
+  insState.scenario = r.data;
+  insState.series = r.data.series_id;
+  renderScenario();
+}
+
+function renderScenario(){
+  const sc = insState.scenario;
+  show('scenario');
+
+  // One inspection row per recorded run, so repeat runs of the same order stay
+  // distinguishable rather than collapsing into one line.
+  const tests = (sc.tests || []).map(t =>
+    '<div class="insrow"><div style="min-width:0">' +
+      '<div><b>' + esc(t.order_number) + '</b> ' + chip((t.summary||{}).overall||'pending') +
+        (t.run_is_live ? ' <span class="chip pending">live output</span>' : '') + '</div>' +
+      '<div class="muted">run: ' + esc(t.run_label) + ' &middot; started ' + esc(t.created_at) + '</div>' +
+    '</div><button class="small" data-open="' + esc(t.test_id) + '">Open</button></div>').join('');
+
+  const orderOpts = sc.orders.map(o => '<option value="' + esc(o) + '">' + esc(o) + '</option>').join('');
+
+  $('insScenario').innerHTML =
+    '<h2>' + esc(sc.name) + ' <span class="muted" style="text-transform:none">(' +
+      esc(sc.series_id) + ')</span></h2>' +
+    '<p class="muted">' + esc(sc.description || '') + '</p>' +
+
+    '<div class="docpane">' +
+      '<div>' +
+        '<h2>Layout drawing for this scenario</h2>' +
+        '<div id="layoutBox">' + layoutPane(sc.id, sc.layout) + '</div>' +
+      '</div>' +
+      '<div>' +
+        '<h2>Orders in this scenario</h2>' +
+        '<div id="scOrderList">' + sc.orders.map(o =>
+          '<div class="insrow"><div><b>' + esc(o) + '</b><div class="muted">' +
+          ((sc.order_runs[o] || []).length) + ' output run(s)</div></div></div>').join('') +
+        '</div>' +
+        '<div class="admin-only">' +
+          '<label style="margin-top:12px"><span>Edit orders (comma separated)</span>' +
+            '<input id="scEditOrders" value="' + esc(sc.orders.join(', ')) + '"></label>' +
+          '<button class="small" id="scSaveOrders">Save orders</button>' +
+          '<label style="margin-top:14px"><span>Assigned testers ' +
+            '(none ticked = visible to everyone)</span>' +
+            assignPicker('scEditAssign', sc.assigned_to || []) + '</label>' +
+          '<button class="small" id="scSaveAssign">Save assignment</button>' +
+        '</div>' +
+        '<div class="muted" style="margin-top:10px">Assigned to: ' +
+          ((sc.assigned_to || []).length
+            ? esc((sc.assigned_to || []).map(id =>
+                (ROSTER.find(u => u.id === id) || {}).name || id).join(', '))
+            : '<i>nobody in particular &mdash; visible to every tester</i>') + '</div>' +
+
+        '<h2 style="margin-top:18px">Start an inspection</h2>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+          '<label style="margin:0;flex:1;min-width:140px"><span>Order</span>' +
+            '<select id="newOrder">' + orderOpts + '</select></label>' +
+          '<label style="margin:0;flex:2;min-width:200px"><span>Output run</span>' +
+            '<select id="newRun"></select></label>' +
+          '<button class="small primary" id="newTest">Start</button>' +
+        '</div>' +
+        '<p class="muted" style="margin-top:6px">Each inspection is pinned to one ' +
+        'output run. The live folder is overwritten by the next pipeline run; an ' +
+        'archived run is not.</p>' +
+      '</div>' +
+    '</div>' +
+
+    '<h2 style="margin-top:16px">Inspections in this scenario</h2>' +
+    (tests || '<span class="muted">None yet.</span>');
+
+  bindLayout(sc.id, () => openScenario(sc.id));
+  $('insScenario').querySelectorAll('[data-open]').forEach(b =>
+    b.onclick = () => insOpen(b.dataset.open, 'pick'));
+
+  const fillRuns = () => {
+    const o = $('newOrder').value;
+    const runs = sc.order_runs[o] || [];
+    $('newRun').innerHTML = runs.length
+      ? runs.map(r => '<option value="' + esc(r.run_id) + '">' + esc(r.label) +
+                      ' &mdash; ' + esc(r.modified) + '</option>').join('')
+      : '<option value="live">no runs found</option>';
+  };
+  $('newOrder').onchange = fillRuns;
+  fillRuns();
+
+  const saveOrders = $('scSaveOrders');
+  if(saveOrders) saveOrders.onclick = async () => {
+    const orders = $('scEditOrders').value.split(/[,\s]+/).filter(Boolean);
+    const r = await api('/api/scenarios/update', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: sc.id, orders})
+    });
+    const d = r.data || {};
+    if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+    toast('Orders updated', 'ok');
+    openScenario(sc.id);
+  };
+
+  const saveAssign = $('scSaveAssign');
+  if(saveAssign) saveAssign.onclick = async () => {
+    const r = await api('/api/scenarios/assign', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: sc.id, assigned_to: readAssignPicker('scEditAssign')})
+    });
+    const d = r.data || {};
+    if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+    toast('Assignment saved', 'ok');
+    openScenario(sc.id);
+  };
+
+  $('newTest').onclick = async () => {
+    const who = await requireTester();
+    if(!who){ toast('Choose who you are first', 'bad'); return; }
+    const r = await api('/api/tests/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(Object.assign(
+        {order_number: $('newOrder').value,
+         scenario_id: sc.id, run_id: $('newRun').value}, testerFields()))
+    });
+    const d = r.data || {};
+    if(!d.ok){
+      $('insNote').innerHTML = '<div class="note bad">' + esc(d.message || 'failed') + '</div>';
+      return;
+    }
+    $('insNote').innerHTML = '';
+    toast(d.message, 'ok');
+    insOpen(d.test_id, 'pick');
+  };
+}
+
+async function insOpen(testId, view){
+  const r = await api('/api/tests/detail?id=' + encodeURIComponent(testId));
+  if(!r.ok){ toast('Could not load inspection', 'bad'); return; }
+  insState.test = r.data;
+  if(r.data.scenario){ insState.scenario = insState.scenario || r.data.scenario; }
+  if(view === 'pick'){ insRenderPick(); } else { insRenderWizard(); }
+}
+
+
+function insRenderPick(){
+  mkFlush();                      // leaving the step; do not lose a fresh mark
+  const t = insState.test;
+  const by = t.by_component || {};
+  show('pick');
+
+  const drift = t.snapshot_changed
+    ? '<div class="note warn">The output folder for this order has changed since ' +
+      'this inspection started, so the files shown may be from a later run than ' +
+      'the one you began checking.</div>' : '';
+
+  const cards = (t.components || []).map(c => {
+    const cid = c.component_id;
+    const v = by[cid] || {overall: 'pending', done: 0, applicable: 0};
+    const noDraw = !(c.documents || {}).drawing;
+    return '<div class="pickcard ' + v.overall + '" data-pick="' + esc(cid) + '">' +
+      '<div class="pickcard-h"><b>' + esc(cid) + '</b>' + chip(v.overall) + '</div>' +
+      '<div class="muted">' + esc(c.type || '') + '</div>' +
+      '<div class="muted">' + v.done + ' of ' + v.applicable + ' checks done</div>' +
+      (noDraw ? '<div class="muted" style="color:var(--warn)">no drawing</div>' : '') +
+      '</div>';
+  }).join('');
+
+  const s = t.summary || {};
+  $('insPick').innerHTML = drift +
+    '<h2>' + esc(t.order_number) + ' &mdash; choose a component ' + chip(s.overall || 'pending') + '</h2>' +
+    '<p class="muted" style="margin:0 0 12px">Each component is carried through every ' +
+    'check in turn. The order passes when all of its components pass.</p>' +
+    '<div class="pickgrid">' + cards + '</div>';
+
+  $('insPick').querySelectorAll('[data-pick]').forEach(el => el.onclick = () => {
+    insState.component = el.dataset.pick;
+    insState.stepIndex = firstUnfinishedStep(el.dataset.pick);
+    insRenderWizard();
+  });
+}
+
+function firstUnfinishedStep(cid){
+  // Resume where this component left off rather than always at step 1.
+  const t = insState.test;
+  for(let i = 0; i < t.catalogue.length; i++){
+    const st = (t.steps[t.catalogue[i].id] || {}).components || {};
+    const e = st[cid];
+    if(e && e.status === 'pending') return i;
+  }
+  return 0;
+}
+
+/* ---------- the wizard ---------- */
+
+function insRenderWizard(){
+  mkFlush();                      // the redraw below destroys the canvas
+  const t = insState.test, cid = insState.component;
+  const cat = t.catalogue || [];
+  const spec = cat[insState.stepIndex];
+  show('wizard');
+  if(!spec){ insRenderPick(); return; }
+
+  const entry = ((t.steps[spec.id] || {}).components || {})[cid] || {};
+  const meta = (t.components || []).find(x => x.component_id === cid) || {};
+
+  const mkc = t.markup_counts || {};
+  const dots = cat.map((c, i) => {
+    const e = ((t.steps[c.id] || {}).components || {})[cid] || {};
+    const marked = mkc[c.id + '|' + cid];
+    return '<div class="stepdot ' + (i === insState.stepIndex ? 'cur ' : '') +
+      (e.status || 'pending') + '" data-step="' + i + '" title="' + esc(c.name) +
+      (marked ? ' — ' + marked + ' markup mark(s)' : '') + '">' +
+      (i + 1) + (marked ? '<span class="mkdot"></span>' : '') + '</div>';
+  }).join('<span class="stepline"></span>');
+
+  $('insWiz').innerHTML =
+    '<div class="wizhead">' +
+      '<div><h2 style="margin:0">' + esc(cid) + ' <span class="muted" ' +
+        'style="text-transform:none">' + esc(meta.type || '') + '</span></h2>' +
+        '<div class="muted">Step ' + (insState.stepIndex + 1) + ' of ' + cat.length +
+        ' &mdash; ' + esc(spec.name) + '</div></div>' +
+      '<div class="steps">' + dots + '</div>' +
+    '</div>' +
+    '<p class="muted">' + esc(spec.description || '') + '</p>' +
+    (entry.status === 'na'
+      ? '<div class="note warn">This check does not apply to ' + esc(cid) + ': ' +
+        esc(entry.na_reason || 'no data') + '</div>'
+      : '') +
+    '<div id="wizBody"></div>' +
+    '<div class="wiznav">' +
+      '<button class="small" id="wizPrev"' + (insState.stepIndex ? '' : ' disabled') + '>&larr; Previous</button>' +
+      '<button class="small" id="wizNext">' +
+        (insState.stepIndex === cat.length - 1 ? 'Finish component' : 'Skip &rarr;') + '</button>' +
+    '</div>';
+
+  $('insWiz').querySelectorAll('[data-step]').forEach(d => d.onclick = () => {
+    insState.stepIndex = +d.dataset.step;
+    insRenderWizard();
+  });
+  $('wizPrev').onclick = () => { insState.stepIndex--; insRenderWizard(); };
+  $('wizNext').onclick = () => advance();
+
+  renderStepBody(spec, entry, meta);
+}
+
+function advance(){
+  const cat = insState.test.catalogue || [];
+  if(insState.stepIndex < cat.length - 1){
+    insState.stepIndex++;
+    insRenderWizard();
+  } else {
+    toast(insState.component + ' complete', 'ok');
+    insOpen(insState.test.test_id, 'pick');   // back to the picker, refreshed
+  }
+}
+
+/* ---------- drawing markup ----------
+
+   There is no PDF library on this box and no internet to fetch one, so the
+   drawing PDF can neither be rasterised nor drawn onto. Instead a transparent
+   canvas is laid exactly over the page and the marks are kept as VECTORS in
+   normalised 0..1 PAGE coordinates.
+
+   Anchoring the marks to the page, not the view
+   ---------------------------------------------
+   A browser will not tell us a plugin PDF viewer's scroll or zoom. This used
+   to mean the marks followed the frame: zoom the PDF and the drawing slid out
+   from under them.
+
+   So the plugin's zoom is taken out of the picture. The PDF is pinned to
+   page-fit inside a box we size ourselves, the iframe is made
+   pointer-events:none so nothing can change that, and all zooming is done by
+   resizing the box. The canvas sits inside the same box, so it is not that
+   the marks are kept in step with the drawing -- they are in the same
+   coordinate space as it, and cannot drift.
+
+   Resizing the box (rather than CSS-scaling it) also makes the plugin
+   re-render at the new size, so zooming in gives more detail instead of a
+   magnified blur.
+
+   The page's proportions come from /api/tests/docinfo, which reads the PDF's
+   MediaBox: doors and panels are landscape, stiles portrait, and one assumed
+   aspect ratio would put every stile's marks in the wrong place.          */
+
+const MK_COLOR = '#ff2d2d';
+const MK_WIDTH = 0.0035;          // fraction of the frame width
+
+const MK_ZOOM_MIN = 1;            // 1 = the whole page visible; never less
+const MK_ZOOM_MAX = 8;
+const MK_ZOOM_STEP = 1.4;
+
+const MK = {
+  key: null, testId: null, step: null, component: null,
+  strokes: [], live: null, tool: null,
+  canvas: null, ctx: null, dpr: 1, ro: null,
+  dirty: false, timer: null, saving: false,
+  // Page proportions and the zoom WE apply. The PDF plugin's own zoom is
+  // pinned to page-fit and never changes, so this is the only scale in play
+  // and the canvas can be kept exactly over the page.
+  aspect: 1584 / 1224, zoom: 1
+};
+
+function mkClamp01(v){ return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
+function mkBarHtml(){
+  return '<div class="mkbar">' +
+    '<span class="muted" style="font-size:12px"><span class="swatch"></span>Markup</span>' +
+    '<span class="sep"></span>' +
+    '<button class="small on" id="mkView" title="Read the drawing: scroll and zoom the PDF normally">View</button>' +
+    '<button class="small" id="mkPen" title="Draw freehand in red">Pen</button>' +
+    '<button class="small" id="mkEll" title="Drag out a red circle or ellipse">Ellipse</button>' +
+    '<span class="sep"></span>' +
+    '<button class="small" id="mkUndo" title="Remove the last mark">Undo</button>' +
+    '<button class="small" id="mkClear" title="Remove every mark on this drawing">Clear</button>' +
+    '<button class="small primary" id="mkSave" title="Marks save themselves; this saves right now">Save</button>' +
+    '<span class="sep"></span>' +
+    '<button class="small" id="mkOut" title="Zoom out">&minus;</button>' +
+    '<span class="mkzoom" id="mkZoomLabel">100%</span>' +
+    '<button class="small" id="mkIn" title="Zoom in">+</button>' +
+    '<button class="small" id="mkFit" title="Show the whole drawing">Fit</button>' +
+    '<span class="mkstate" id="mkState">loading&hellip;</span>' +
+  '</div>';
+}
+
+function mkFrameHtml(cid, docUrl){
+  // The PDF is pinned to page-fit inside a box we size ourselves, and the
+  // plugin is made non-interactive, so the only zoom in play is ours. That is
+  // what lets a mark stay on the drawing: the canvas is a sibling of the
+  // iframe inside the same box, so anything that resizes the page resizes the
+  // marks with it, exactly.
+  const src = docUrl + '#zoom=page-fit&toolbar=0&navpanes=0&scrollbar=0&view=Fit';
+  return '<div class="mkstage" id="mkStage">' +
+      '<div class="mkpage" id="mkPage">' +
+        '<iframe src="' + src + '" title="drawing for ' + esc(cid) + '"></iframe>' +
+        '<canvas id="mkCanvas"></canvas>' +
+      '</div>' +
+    '</div>' +
+    '<div class="mkhint muted">Marks belong to the drawing: zoom and they move ' +
+      'with it. <a href="' + docUrl + '" target="_blank" rel="noopener">Open the ' +
+      'PDF in a new tab</a> to read it with the browser\'s own viewer.</div>';
+}
+
+function mkState(text, cls){
+  const el = $('mkState');
+  if(el){ el.className = 'mkstate ' + (cls || ''); el.textContent = text; }
+}
+
+function mkSummary(){
+  if(MK.saving) return;
+  if(MK.dirty){ mkState('unsaved changes', 'dirty'); return; }
+  const n = MK.strokes.length;
+  mkState(n ? n + (n === 1 ? ' mark saved' : ' marks saved') : 'no markup',
+          n ? 'saved' : '');
+}
+
+function mkRender(){
+  const cv = MK.canvas;
+  if(!cv || !MK.ctx) return;
+  const ctx = MK.ctx, W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  const all = MK.live ? MK.strokes.concat([MK.live]) : MK.strokes;
+  for(let k = 0; k < all.length; k++){
+    const s = all[k], p = s.points || [];
+    if(!p.length) continue;
+    ctx.strokeStyle = s.color || MK_COLOR;
+    ctx.lineWidth = Math.max(2 * MK.dpr, (s.width || MK_WIDTH) * W);
+    ctx.beginPath();
+    if(s.tool === 'ellipse'){
+      if(p.length < 2) continue;
+      const x0 = p[0][0] * W, y0 = p[0][1] * H, x1 = p[1][0] * W, y1 = p[1][1] * H;
+      ctx.ellipse((x0 + x1) / 2, (y0 + y1) / 2,
+                  Math.abs(x1 - x0) / 2, Math.abs(y1 - y0) / 2, 0, 0, Math.PI * 2);
+    } else {
+      ctx.moveTo(p[0][0] * W, p[0][1] * H);
+      for(let i = 1; i < p.length; i++) ctx.lineTo(p[i][0] * W, p[i][1] * H);
+      if(p.length === 1) ctx.lineTo(p[0][0] * W + 0.01, p[0][1] * H + 0.01);
+    }
+    ctx.stroke();
+  }
+}
+
+/* Lay the page out inside the stage.
+
+   At zoom 1 the whole drawing is visible -- that is "fully zoomed out", and
+   where every step starts. Above that the page box grows and the stage
+   scrolls, which also makes the PDF plugin re-render at the larger size
+   instead of scaling a blurry bitmap. */
+function mkLayout(anchor){
+  const stage = $('mkStage'), page = $('mkPage');
+  if(!stage || !page) return;
+
+  const sw = stage.clientWidth, sh = stage.clientHeight;
+  if(sw < 2 || sh < 2) return;
+
+  // The page at zoom 1: as large as fits the stage whole, in the page's own
+  // proportions, so nothing is letterboxed or cropped.
+  const fitW = Math.min(sw, sh * MK.aspect);
+  const fitH = fitW / MK.aspect;
+
+  // Keep whatever the tester was looking at in the middle of the view across
+  // a zoom change; jumping back to a corner loses the detail they were on.
+  const before = {
+    x: (stage.scrollLeft + sw / 2) / Math.max(page.offsetWidth, 1),
+    y: (stage.scrollTop + sh / 2) / Math.max(page.offsetHeight, 1)
+  };
+
+  const w = Math.round(fitW * MK.zoom), h = Math.round(fitH * MK.zoom);
+  page.style.width = w + 'px';
+  page.style.height = h + 'px';
+
+  const at = anchor || before;
+  if(MK.zoom > 1 && page.offsetWidth > 0){
+    stage.scrollLeft = at.x * w - sw / 2;
+    stage.scrollTop = at.y * h - sh / 2;
+  } else {
+    stage.scrollLeft = 0;
+    stage.scrollTop = 0;
+  }
+
+  const label = $('mkZoomLabel');
+  if(label) label.textContent = Math.round(MK.zoom * 100) + '%';
+  const out = $('mkOut'); if(out) out.disabled = MK.zoom <= MK_ZOOM_MIN + 1e-6;
+  const zin = $('mkIn'); if(zin) zin.disabled = MK.zoom >= MK_ZOOM_MAX - 1e-6;
+
+  mkResize();
+}
+
+function mkSetZoom(z, anchor){
+  const next = Math.min(MK_ZOOM_MAX, Math.max(MK_ZOOM_MIN, z));
+  if(Math.abs(next - MK.zoom) < 1e-6) return;
+  MK.zoom = next;
+  mkLayout(anchor);
+}
+
+function mkResize(){
+  const cv = MK.canvas, page = $('mkPage');
+  if(!cv || !page) return;
+  const r = page.getBoundingClientRect();
+  MK.dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(r.width * MK.dpr));
+  const h = Math.max(1, Math.round(r.height * MK.dpr));
+  if(cv.width !== w || cv.height !== h){ cv.width = w; cv.height = h; }
+  mkRender();
+}
+
+function mkPos(ev){
+  const r = MK.canvas.getBoundingClientRect();
+  return [+mkClamp01((ev.clientX - r.left) / (r.width || 1)).toFixed(4),
+          +mkClamp01((ev.clientY - r.top) / (r.height || 1)).toFixed(4)];
+}
+
+const MK_BUTTONS = ['mkPen', 'mkEll', 'mkUndo', 'mkClear', 'mkSave'];
+
+function mkEnable(on){
+  MK_BUTTONS.forEach(function(id){ const b = $(id); if(b) b.disabled = !on; });
+}
+
+function mkSetTool(tool){
+  MK.tool = tool;
+  const fr = $('mkStage');
+  if(fr) fr.classList.toggle('drawing', !!tool);
+  const map = {mkView: null, mkPen: 'pen', mkEll: 'ellipse'};
+  Object.keys(map).forEach(function(id){
+    const b = $(id);
+    if(b) b.classList.toggle('on', map[id] === tool);
+  });
+}
+
+/* Marks save themselves a moment after each one is finished; the Save button
+   forces it now. Either way the toolbar says which state you are in, so the
+   tester never has to guess whether their work is on disk. */
+function mkTouch(){
+  MK.dirty = true;
+  mkSummary();
+  if(MK.timer) clearTimeout(MK.timer);
+  MK.timer = setTimeout(function(){ MK.timer = null; mkSave(); }, 700);
+}
+
+async function mkSave(){
+  if(MK.timer){ clearTimeout(MK.timer); MK.timer = null; }
+  if(!MK.key) return;
+  // Snapshot before the first await: the step may be torn down mid-flight.
+  const key = MK.key, testId = MK.testId, step = MK.step, cid = MK.component;
+  const payload = MK.strokes.slice();
+  MK.dirty = false;
+  MK.saving = true;
+  mkState('saving…', '');
+  const r = await api('/api/tests/markup', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({test_id: testId, step: step, component: cid,
+                          strokes: payload})
+  });
+  const d = r.data || {};
+  if(MK.key !== key) return;        // moved on; nobody left to report to
+  MK.saving = false;
+  if(!d.ok){
+    MK.dirty = true;
+    mkState('not saved: ' + (d.message || 'failed'), 'bad');
+    toast('Markup not saved: ' + (d.message || 'failed'), 'bad');
+    return;
+  }
+  // Keep the step dots' markup badges honest without refetching the record.
+  if(insState.test){
+    insState.test.markup_counts = insState.test.markup_counts || {};
+    if(d.count) insState.test.markup_counts[key] = d.count;
+    else delete insState.test.markup_counts[key];
+  }
+  mkSummary();
+}
+
+function mkFlush(){
+  // Called before the wizard replaces the DOM, so a mark drawn a moment ago
+  // is not lost to the redraw.
+  if(MK.timer){ clearTimeout(MK.timer); MK.timer = null; }
+  if(MK.dirty && MK.key) mkSave();
+  if(MK.ro){ MK.ro.disconnect(); MK.ro = null; }
+  MK.canvas = null; MK.ctx = null; MK.live = null;
+  MK.key = null;      // any save still in flight now knows it is orphaned
+}
+
+async function mkInit(testId, step, cid){
+  MK.key = step + '|' + cid;
+  MK.testId = testId; MK.step = step; MK.component = cid;
+  MK.strokes = []; MK.live = null; MK.dirty = false; MK.saving = false;
+  MK.canvas = $('mkCanvas');
+  if(!MK.canvas) return;
+  MK.ctx = MK.canvas.getContext('2d');
+  mkSetTool(null);
+  mkEnable(false);        // no drawing until the saved markup is in hand,
+                          // or the reply below would overwrite it
+
+  // Every step opens showing the whole drawing.
+  MK.zoom = 1;
+  mkLayout();
+
+  // The page's real proportions, so the canvas covers it exactly. Doors and
+  // panels are landscape, stiles portrait; guessing one shape would put every
+  // stile's marks in the wrong place.
+  api('/api/tests/docinfo?id=' + encodeURIComponent(testId) +
+      '&component=' + encodeURIComponent(cid)).then(function(res){
+    if(MK.key !== step + '|' + cid) return;       // moved on already
+    const g = (res && res.data) || {};
+    if(g.ok && g.aspect > 0.05 && g.aspect < 20){
+      MK.aspect = g.aspect;
+      mkLayout();
+    }
+  });
+
+  if(window.ResizeObserver){
+    // Watch the STAGE: the page is sized by us, so observing it would just
+    // report our own changes back to us.
+    MK.ro = new ResizeObserver(function(){ mkLayout(); });
+    MK.ro.observe($('mkStage'));
+  } else {
+    window.addEventListener('resize', mkLayout);
+  }
+
+  $('mkView').onclick = function(){ mkSetTool(null); };
+  $('mkPen').onclick = function(){ mkSetTool('pen'); };
+  $('mkEll').onclick = function(){ mkSetTool('ellipse'); };
+  $('mkIn').onclick = function(){ mkSetZoom(MK.zoom * MK_ZOOM_STEP); };
+  $('mkOut').onclick = function(){ mkSetZoom(MK.zoom / MK_ZOOM_STEP); };
+  $('mkFit').onclick = function(){ mkSetZoom(1); };
+
+  // Ctrl/⌘ + wheel zooms about the pointer, the way every drawing tool does.
+  // A plain wheel is left alone so the stage still scrolls normally.
+  $('mkStage').addEventListener('wheel', function(ev){
+    if(!(ev.ctrlKey || ev.metaKey)) return;
+    ev.preventDefault();
+    const page = $('mkPage'), r = page.getBoundingClientRect();
+    const anchor = {x: (ev.clientX - r.left) / Math.max(r.width, 1),
+                    y: (ev.clientY - r.top) / Math.max(r.height, 1)};
+    mkSetZoom(MK.zoom * (ev.deltaY < 0 ? MK_ZOOM_STEP : 1 / MK_ZOOM_STEP), anchor);
+  }, {passive: false});
+  $('mkUndo').onclick = function(){
+    if(!MK.strokes.length){ toast('Nothing to undo', ''); return; }
+    MK.strokes.pop();
+    mkRender();
+    mkTouch();
+  };
+  $('mkClear').onclick = function(){
+    if(!MK.strokes.length) return;
+    if(!confirm('Remove all ' + MK.strokes.length + ' marks from this drawing?')) return;
+    MK.strokes = [];
+    mkRender();
+    mkTouch();
+  };
+  $('mkSave').onclick = function(){ mkSave(); };
+
+  const cv = MK.canvas;
+  cv.onpointerdown = function(ev){
+    if(!MK.tool) return;
+    ev.preventDefault();
+    try { cv.setPointerCapture(ev.pointerId); } catch(e){}
+    const p = mkPos(ev);
+    MK.live = {tool: MK.tool, color: MK_COLOR, width: MK_WIDTH,
+               points: MK.tool === 'ellipse' ? [p, p] : [p]};
+    mkRender();
+  };
+  cv.onpointermove = function(ev){
+    if(!MK.live) return;
+    const p = mkPos(ev);
+    if(MK.live.tool === 'ellipse'){
+      MK.live.points[1] = p;
+    } else {
+      const last = MK.live.points[MK.live.points.length - 1];
+      // Thin the trail: a pointer fires far faster than the drawing needs.
+      if(Math.abs(p[0] - last[0]) < 0.002 && Math.abs(p[1] - last[1]) < 0.002) return;
+      if(MK.live.points.length < 4000) MK.live.points.push(p);
+    }
+    mkRender();
+  };
+  const finish = function(ev){
+    if(!MK.live) return;
+    const s = MK.live;
+    MK.live = null;
+    try { cv.releasePointerCapture(ev.pointerId); } catch(e){}
+    // Discard a stray click that left no visible mark.
+    const p = s.points;
+    const tiny = s.tool === 'ellipse'
+      ? (Math.abs(p[1][0] - p[0][0]) < 0.008 && Math.abs(p[1][1] - p[0][1]) < 0.008)
+      : p.length < 2;
+    if(tiny){ mkRender(); return; }
+    // Matches inspection.MARKUP_MAX_STROKES, so the limit shows up here as a
+    // clear message rather than as a rejected save.
+    if(MK.strokes.length >= 400){
+      mkRender();
+      toast('This drawing already has 400 marks — clear some before adding more', 'bad');
+      return;
+    }
+    MK.strokes.push(s);
+    mkRender();
+    mkTouch();
+  };
+  cv.onpointerup = finish;
+  cv.onpointercancel = finish;
+
+  const r = await api('/api/tests/markup?id=' + encodeURIComponent(testId) +
+                      '&step=' + encodeURIComponent(step) +
+                      '&component=' + encodeURIComponent(cid));
+  if(MK.key !== step + '|' + cid) return;
+  const d = r.data || {};
+  if(r.ok && d.ok){
+    MK.strokes = d.strokes || [];
+    mkRender();
+    mkEnable(true);
+    mkSummary();
+  } else {
+    // Leave the tools off: marks drawn now could not be saved anyway.
+    mkState('markup unavailable: ' + (d.message || 'error'), 'bad');
+  }
+}
+
+function renderStepBody(spec, entry, meta){
+  const t = insState.test, cid = insState.component;
+  const body = $('wizBody');
+  const hasDrawing = !!(meta.documents || {}).drawing;
+  const docUrl = '/api/tests/doc?id=' + encodeURIComponent(t.test_id) +
+                 '&component=' + encodeURIComponent(cid) + '&kind=drawing';
+
+  const drawing = hasDrawing
+    ? mkBarHtml() + mkFrameHtml(cid, docUrl)
+    : '<div class="note warn"><b>No drawing was produced for ' + esc(cid) + '.</b><br>' +
+      'The pipeline generated output for this component without a drawing, so ' +
+      'there is nothing to compare against here.</div>';
+
+  let right = '';
+  if(spec.id === 'component_config'){
+    right = '<h2>Determined configuration</h2><div id="determinedBox"></div>' +
+            '<h2 style="margin-top:14px">Order layout drawing</h2>' +
+            '<div id="layoutBox">' + layoutPane(t.scenario_id, t.layout) + '</div>';
+  }
+  if(spec.id === 'drill_positions'){
+    const drills = (t.drill_data || {})[cid] || [];
+    const rows = drills.map((d, i) =>
+      '<tr><td>' + (i + 1) + '</td><td>' + (d.PositionX != null ? d.PositionX : '') +
+      '</td><td>' + (d.PositionY != null ? d.PositionY : '') +
+      '</td><td>' + (d.PositionZ != null ? d.PositionZ : '') +
+      '</td><td>' + (d.ToolDM != null ? d.ToolDM : '') +
+      '</td><td>' + (d.WorkStop != null ? d.WorkStop : '') + '</td></tr>').join('');
+    right = '<h2>Drilling output (' + drills.length + ' positions)</h2>' +
+      (drills.length
+        ? '<div style="overflow:auto;max-height:420px"><table><thead><tr><th>#</th>' +
+          '<th>X</th><th>Y</th><th>Z</th><th>Tool</th><th>Stop</th></tr></thead><tbody>' +
+          rows + '</tbody></table></div>'
+        : '<span class="muted">No drilling output for this component.</span>');
+  }
+
+  // For the configuration check the layout leads and the component drawing
+  // sits beside it; every other check leads with the component drawing.
+  const isConfig = spec.id === 'component_config';
+  const leftPane = isConfig
+    ? '<div id="stepRight">' + right + '</div>'
+    : '<div><h2>Drawing</h2>' + drawing + '</div>';
+  const rightPane = isConfig
+    ? '<div><h2>' + esc(cid) + ' drawing</h2>' + drawing + '</div>'
+    : '<div id="stepRight">' + right + '</div>';
+  body.innerHTML =
+    '<div class="docpane">' + leftPane + rightPane + '</div>' +
+    '<div class="decide">' +
+      '<h2>Decision for this step</h2>' +
+      '<div style="margin-bottom:8px">Current: ' + chip(entry.status || 'pending') +
+        (entry.tester ? '<span class="muted"> &middot; by ' + esc(entry.tester) + '</span>' : '') +
+        (entry.updated_at ? '<span class="muted"> &middot; ' + esc(entry.updated_at) + '</span>' : '') +
+        // Earlier decisions in full rather than a list of names. Where two
+        // people disagree, what they each said is the useful part.
+        ((entry.history && entry.history.length)
+          ? '<div class="muted" style="margin-top:6px">Earlier decisions:' +
+            entry.history.map(h => '<div>' + chip(h.status) + ' ' +
+              esc(h.tester || 'unknown') + ' &middot; ' + esc(h.updated_at || '') +
+              (h.comment ? ' &mdash; ' + esc(h.comment) : '') + '</div>').join('') +
+            '</div>'
+          : (entry.also_judged_by && entry.also_judged_by.length
+             ? '<div class="muted">also judged by ' +
+               esc(entry.also_judged_by.join(', ')) + '</div>'
+             : '')) + '</div>' +
+      '<label><span>Comment <span class="muted">(required to fail)</span></span>' +
+      '<input id="insComment" value="' +
+        esc(entry.comment || '') + '" placeholder="e.g. hole 3 off by 2mm"></label>' +
+      '<div class="btns">' +
+        '<button class="primary" data-set="pass">Pass</button>' +
+        '<button class="danger" data-set="fail">Fail</button>' +
+      '</div></div>';
+
+  if(hasDrawing){ mkInit(t.test_id, spec.id, cid); }
+
+  if(spec.id === 'cnc_routing'){
+    insRenderRouting($('stepRight'), cid);
+  }
+  if(spec.id === 'component_config'){
+    bindLayout(t.scenario_id, async () => {
+      const d = await api('/api/tests/detail?id=' + encodeURIComponent(t.test_id));
+      if(d.ok){ insState.test = d.data; insRenderWizard(); }
+    });
+    renderDetermined($('determinedBox'), cid);
+  }
+
+  body.querySelectorAll('[data-set]').forEach(b => b.onclick = async () => {
+    // A failure without a reason is not a usable record. Caught here for a
+    // clear prompt; the server enforces it regardless of client.
+    const comment = ($('insComment').value || '').trim();
+    if(b.dataset.set === 'fail' && !comment){
+      toast('Add a comment saying what is wrong before failing this step', 'bad');
+      $('insComment').focus();
+      $('insComment').style.borderColor = 'var(--bad)';
+      return;
+    }
+    $('insComment').style.borderColor = '';
+    const who = await requireTester();
+    if(!who){ toast('Choose who you are before recording a result', 'bad'); return; }
+    const r = await api('/api/tests/result', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(Object.assign(
+        {test_id: t.test_id, step: spec.id, component: cid,
+         status: b.dataset.set, comment: comment}, testerFields()))
+    });
+    const data = r.data || {};
+    if(!data.ok){ toast(data.message || 'failed', 'bad'); return; }
+    toast(cid + ' \u2014 ' + spec.name + ': ' + b.dataset.set,
+          b.dataset.set === 'pass' ? 'ok' : 'bad');
+    // Refresh the record so the step dots and picker reflect the decision,
+    // then move on.
+    const d = await api('/api/tests/detail?id=' + encodeURIComponent(t.test_id));
+    if(d.ok) insState.test = d.data;
+    advance();
+  });
+}
+
+/* ---------- admin: the roster, and who is doing what ---------- */
+
+async function renderAdmin(){
+  show('admin');
+  const host = $('insAdmin');
+  host.innerHTML = '<div class="muted">loading&hellip;</div>';
+
+  const info = await loadRoster();
+  const unlocked = isAdmin();
+
+  if(!unlocked){
+    host.innerHTML =
+      '<h2>Admin</h2>' +
+      '<p class="muted">Scenario setup and the tester roster sit behind a shared ' +
+        'PIN. It keeps configuration out of the way during testing; it is not a ' +
+        'security boundary, and anyone who can reach the share can edit these ' +
+        'files directly.</p>' +
+      (info.admin_configured
+        ? '<div style="display:flex;gap:8px;align-items:flex-end;max-width:340px">' +
+            '<label style="margin:0;flex:1"><span>Admin PIN</span>' +
+              '<input id="adminPin" type="password" autocomplete="off"></label>' +
+            '<button class="small primary" id="adminGo">Unlock</button></div>'
+        : '<div class="note warn"><b>No admin PIN has been set yet.</b><br>' +
+            'Set one from the pipeline VM &mdash; it is stored on the share and ' +
+            'is then the same for everybody.</div>' +
+          '<div style="display:flex;gap:8px;align-items:flex-end;max-width:340px">' +
+            '<label style="margin:0;flex:1"><span>Choose a PIN</span>' +
+              '<input id="adminNew" type="password" autocomplete="off"></label>' +
+            '<button class="small primary" id="adminSet">Set PIN</button></div>');
+
+    const go = $('adminGo');
+    if(go){
+      const submit = async () => {
+        const res = await adminUnlock($('adminPin').value);
+        if(!res.ok){ toast(res.message, 'bad'); return; }
+        toast('Admin unlocked', 'ok');
+        renderAdmin();
+      };
+      go.onclick = submit;
+      $('adminPin').onkeydown = e => { if(e.key === 'Enter') submit(); };
+    }
+    const set = $('adminSet');
+    if(set) set.onclick = async () => {
+      const r = await api('/api/admin/pin', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({pin: $('adminNew').value, who: testerName()})
+      });
+      const d = r.data || {};
+      if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+      setAdminSession(d);
+      toast('Admin PIN set', 'ok');
+      renderAdmin();
+    };
+    return;
+  }
+
+  const prog = await api('/api/progress');
+  const people = (prog.data || {}).people || [];
+  const byName = {};
+  people.forEach(p => { byName[(p.tester || '').toLowerCase()] = p; });
+
+  const roster = (info.users || []).map(u => {
+    const p = byName[(u.name || '').toLowerCase()] || {};
+    return '<div class="insrow"><div style="min-width:0">' +
+      '<div><b>' + esc(u.name) + '</b>' +
+        (u.active === false ? ' <span class="chip na">retired</span>' : '') +
+        '<span class="muted"> &middot; ' + esc(u.id) + '</span></div>' +
+      '<div class="muted">' +
+        (p.total
+          ? p.total + ' decision(s) across ' + p.tests + ' inspection(s) &middot; ' +
+            p.pass + ' pass, ' + p.fail + ' fail &middot; last ' + esc(p.last_at || '')
+          : 'nothing recorded yet') +
+      '</div></div>' +
+      (u.active === false
+        ? '<button class="small" data-restore="' + esc(u.id) + '">Restore</button>'
+        : '<button class="small" data-retire="' + esc(u.id) + '">Retire</button>') +
+    '</div>';
+  }).join('');
+
+  // Anyone who recorded results before the roster existed, or who typed a name
+  // by hand. Shown so their work is not invisible just because they are not a
+  // roster entry.
+  const known = new Set((info.users || []).map(u => (u.name || '').toLowerCase()));
+  const strays = people.filter(p => !known.has((p.tester || '').toLowerCase()));
+
+  host.innerHTML =
+    '<h2>Admin <span class="adminbadge">unlocked</span></h2>' +
+    '<p class="muted">Add the people who will be testing, then assign scenarios ' +
+      'to them from each series. A tester picks their name when they open the ' +
+      'app &mdash; there is no password, and every decision they record carries ' +
+      'that name and the time.</p>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">' +
+      '<label style="margin:0;min-width:180px"><span>Name</span>' +
+        '<input id="uName" placeholder="Jiego Judge"></label>' +
+      '<label style="margin:0;flex:1;min-width:180px"><span>Note (optional)</span>' +
+        '<input id="uNote" placeholder="shop floor / QA"></label>' +
+      '<button class="small primary" id="uAdd">Add tester</button>' +
+    '</div>' +
+    (roster || '<span class="muted">Nobody on the roster yet.</span>') +
+    (strays.length
+      ? '<h2 style="margin-top:18px">Results from names not on the roster</h2>' +
+        '<p class="muted">Recorded before the roster existed, or typed by hand. ' +
+          'Add them above to tidy this up; the results stand either way.</p>' +
+        strays.map(p => '<div class="insrow"><div><b>' + esc(p.tester) + '</b>' +
+          '<div class="muted">' + p.total + ' decision(s) &middot; last ' +
+          esc(p.last_at || '') + '</div></div>' +
+          '<button class="small" data-adopt="' + esc(p.tester) + '">Add to roster</button>' +
+          '</div>').join('')
+      : '') +
+    '<h2 style="margin-top:18px">Admin PIN</h2>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">' +
+      '<label style="margin:0;min-width:150px"><span>Current</span>' +
+        '<input id="pinCur" type="password" autocomplete="off"></label>' +
+      '<label style="margin:0;min-width:150px"><span>New</span>' +
+        '<input id="pinNew" type="password" autocomplete="off"></label>' +
+      '<button class="small" id="pinSave">Change PIN</button>' +
+      '<button class="small" id="adminOut">Lock admin</button>' +
+    '</div>';
+
+  const addUser = async (name, note) => {
+    const r = await api('/api/users/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({name: name, note: note || ''})
+    });
+    const d = r.data || {};
+    if(!d.ok){ toast(d.message || 'failed', 'bad'); return false; }
+    toast(name + ' added', 'ok');
+    return true;
+  };
+
+  $('uAdd').onclick = async () => {
+    const n = $('uName').value.trim();
+    if(!n){ toast('Enter a name', 'bad'); return; }
+    if(await addUser(n, $('uNote').value)) renderAdmin();
+  };
+  host.querySelectorAll('[data-adopt]').forEach(b =>
+    b.onclick = async () => { if(await addUser(b.dataset.adopt, '')) renderAdmin(); });
+
+  const setActive = async (id, active) => {
+    const r = await api('/api/users/update', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: id, active: active})
+    });
+    const d = r.data || {};
+    if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+    renderAdmin();
+  };
+  host.querySelectorAll('[data-retire]').forEach(b =>
+    b.onclick = () => setActive(b.dataset.retire, false));
+  host.querySelectorAll('[data-restore]').forEach(b =>
+    b.onclick = () => setActive(b.dataset.restore, true));
+
+  $('pinSave').onclick = async () => {
+    const r = await api('/api/admin/pin', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({current: $('pinCur').value, pin: $('pinNew').value,
+                            who: testerName()})
+    });
+    const d = r.data || {};
+    if(!d.ok){ toast(d.message || 'failed', 'bad'); return; }
+    setAdminSession(d);
+    toast('PIN changed', 'ok');
+    renderAdmin();
+  };
+  $('adminOut').onclick = async () => {
+    await adminLock();
+    toast('Admin locked', 'ok');
+    renderSeries();
+  };
+}
+
+
+/* ---------- boot ---------- */
+
+function paintWho(){
+  const name = testerName();
+  $('whoName').textContent = name || 'choose';
+  $('whoInitials').textContent = name ? initialsOf(name) : '?';
+  $('whoAmI').title = name ? 'Signed in as ' + name + ' — click to switch'
+                           : 'Choose who is testing';
+  const ab = $('adminBtn');
+  if(ab) ab.innerHTML = isAdmin() ? 'Admin <span class="adminbadge">on</span>' : 'Admin';
+}
+
+document.addEventListener('testerchanged', paintWho);
+document.addEventListener('adminchanged', paintWho);
+
+(async () => {
+  await loadDeployment();
+  if(DEPLOY.is_tester){
+    // The header pill reports the pipeline, which does not exist on a tester
+    // machine; showing "not running" there would read as a fault.
+    const st = $('hdrState'); if(st) st.textContent = DEPLOY.site_name || 'Inspection';
+    const dot = $('hdrDot'); if(dot) dot.className = 'dot ok';
+  } else {
+    insHeader();
+    setInterval(insHeader, 10000);
+  }
+
+  await refreshAdmin();
+  paintWho();
+
+  $('whoAmI').onclick = async e => { e.preventDefault(); await choosePerson(true); };
+  $('adminBtn').onclick = e => { e.preventDefault(); renderAdmin(); };
+
+  // Ask who is testing before anything else. Attribution is the point of the
+  // roster, and a decision recorded against nobody is worth very little.
+  if(!testerName()) await choosePerson(false);
+  paintWho();
+  renderSeries();
+})();
+</script>
+</body>
+</html>
