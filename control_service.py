@@ -683,6 +683,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _read_raw_body(self) -> bytes:
+        """Drain exactly Content-Length bytes from the socket.
+
+        Must happen before ANY response is written on a raw-body route (file
+        uploads use this instead of _read_body(), which assumes JSON). An
+        admin gate or a size limit that responds first and never reads this
+        closes the connection while the browser may still be mid-upload of a
+        multi-MB file; the client sees that as a bare "Failed to fetch" with
+        no message, not the real error.
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return b''
+        try:
+            return self.rfile.read(length)
+        except Exception:
+            return b''
+
     # ---- routing
 
     def do_GET(self):
@@ -804,9 +825,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         path = urllib.parse.urlparse(self.path).path
-        # These carry a file body, not JSON; reading it here would consume the
-        # stream before the handler sees it.
+        # These carry a file body, not JSON. Read it here, unconditionally,
+        # before anything downstream (an admin gate, a size limit) can reject
+        # the request without draining the socket -- see _read_raw_body().
         raw_body_paths = ('/api/tests/layout', '/api/generate/parse')
+        raw_body = self._read_raw_body() if path in raw_body_paths else b''
         body = {} if path in raw_body_paths else self._read_body()
 
         if path == '/api/control':
@@ -817,7 +840,7 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_pause_state(body)
         elif path == '/api/generate/parse':
             self._handle_csv_parse(urllib.parse.parse_qs(
-                urllib.parse.urlparse(self.path).query))
+                urllib.parse.urlparse(self.path).query), raw_body)
         elif path == '/api/generate/plan':
             self._handle_csv_plan(body)
         elif path == '/api/generate/write':
@@ -828,7 +851,7 @@ class Handler(BaseHTTPRequestHandler):
             if not self._require_admin():
                 return
             self._handle_layout_upload(urllib.parse.parse_qs(
-                urllib.parse.urlparse(self.path).query))
+                urllib.parse.urlparse(self.path).query), raw_body)
         elif path == '/api/admin/unlock':
             self._handle_admin_unlock(body)
         elif path == '/api/admin/lock':
@@ -999,25 +1022,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self._json({'ok': False, 'message': str(e)}, 500)
 
-    def _handle_csv_parse(self, query):
+    def _handle_csv_parse(self, query, data: bytes):
         """Read an uploaded scenario CSV and return a preview.
 
         The parsed sheet is cached server-side under a key: these files hold
         up to 9,700 rows, and re-uploading megabytes just to write the JSONs
         would be wasteful.
         """
-        try:
-            length = int(self.headers.get('Content-Length', 0))
-        except ValueError:
-            length = 0
-        if length <= 0:
+        if not data:
             self._json({'ok': False, 'message': 'empty upload'}, 400)
             return
-        if length > 64 * 1024 * 1024:
+        if len(data) > 64 * 1024 * 1024:
             self._json({'ok': False, 'message': 'CSV exceeds the 64 MB limit'}, 413)
             return
         try:
-            data = self.rfile.read(length)
             parsed = scenario_csv.parse_csv(data)
         except ValueError as e:
             self._json({'ok': False, 'message': str(e)}, 400)
@@ -1261,25 +1279,20 @@ class Handler(BaseHTTPRequestHandler):
                    {'Content-Disposition': 'inline; filename="%s-layout.%s"'
                                            % (scenario, info.get('kind', 'bin'))})
 
-    def _handle_layout_upload(self, query):
+    def _handle_layout_upload(self, query, data: bytes):
         """Store a scenario layout sent as the raw request body."""
         scenario = (query.get('scenario', [''])[0] or '').strip()
         if not scenario:
             self._json({'ok': False, 'message': 'scenario id missing'}, 400)
             return
-        try:
-            length = int(self.headers.get('Content-Length', 0))
-        except ValueError:
-            length = 0
-        if length <= 0:
+        if not data:
             self._json({'ok': False, 'message': 'empty upload'}, 400)
             return
-        if length > scenarios.MAX_LAYOUT_BYTES:
+        if len(data) > scenarios.MAX_LAYOUT_BYTES:
             self._json({'ok': False, 'message': 'file exceeds the %d MB limit'
                         % (scenarios.MAX_LAYOUT_BYTES // 1048576)}, 413)
             return
         try:
-            data = self.rfile.read(length)
             info = scenarios.save_layout(scenario, data)
         except ValueError as e:
             self._json({'ok': False, 'message': str(e)}, 400)
