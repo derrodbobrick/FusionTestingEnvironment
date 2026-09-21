@@ -502,12 +502,14 @@ async function renderScenarios(seriesId){
   show('scenarios');
 
   const mine = testerId();
-  const q = '/api/scenarios?series=' + encodeURIComponent(seriesId) +
-            (scShowAll || !mine ? '&all=1' : '&assigned_to=' + encodeURIComponent(mine));
-  const [r, rAll] = await Promise.all([api(q), api('/api/scenarios?series=' +
-                                        encodeURIComponent(seriesId) + '&all=1')]);
-  const list = (r.data || {}).scenarios || [];
-  const total = ((rAll.data || {}).scenarios || []).length;
+  // One fetch of everything in the series; "mine" filtering happens locally
+  // so the toggle and re-opening this series don't cost a second round trip
+  // through list_scenarios() (which reads every scenario file on the share).
+  const rAll = await api('/api/scenarios?series=' + encodeURIComponent(seriesId) + '&all=1');
+  const all = (rAll.data || {}).scenarios || [];
+  const list = (scShowAll || !mine) ? all
+    : all.filter(s => !(s.assigned_to || []).length || s.assigned_to.includes(mine));
+  const total = all.length;
   const hidden = Math.max(total - list.length, 0);
   if(!ROSTER.length) await loadRoster();
   const nameOf = id => (ROSTER.find(u => u.id === id) || {}).name || id;
