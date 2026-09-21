@@ -15,6 +15,7 @@
   <a class="navlink operator-only" href="/">Pipeline</a>
   <a class="navlink active" href="/inspection">Inspection &amp; testing</a>
   <a class="navlink operator-only" href="/generate">Generate inputs</a>
+  <a class="navlink" href="/results">Results</a>
   <a class="navlink whopill" href="#" id="whoAmI" title="Switch to a different tester">
     <span class="userpick-i" id="whoInitials">?</span><span id="whoName">choose</span></a>
   <a class="navlink" href="#" id="adminBtn" title="Scenario and roster setup">Admin</a>
@@ -1585,7 +1586,13 @@ document.addEventListener('adminchanged', paintWho);
   // roster, and a decision recorded against nobody is worth very little.
   if(!testerName()) await choosePerson(false);
   paintWho();
-  renderSeries();
+
+  // The Results rollup links straight to a scenario ("?scenario=<id>") so a
+  // failing scenario is one click away instead of a re-navigation through
+  // series -> scenario list -> scenario.
+  const deepScenario = new URLSearchParams(location.search).get('scenario');
+  if(deepScenario) await openScenario(deepScenario);
+  else renderSeries();
 })();
 </script>
 </body>

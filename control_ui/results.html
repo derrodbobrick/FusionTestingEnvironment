@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Results Rollup</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header>
+  <h1>Results Rollup</h1>
+  <span class="pill"><i class="dot" id="hdrDot"></i><span id="hdrState">records</span></span>
+  <span class="muted" id="hdrMeta"></span>
+  <span style="flex:1"></span>
+  <a class="navlink operator-only" href="/">Pipeline</a>
+  <a class="navlink" href="/inspection">Inspection &amp; testing</a>
+  <a class="navlink operator-only" href="/generate">Generate inputs</a>
+  <a class="navlink active" href="/results">Results</a>
+  <span class="muted" id="hdrClock"></span>
+</header>
+
+<div class="wrap">
+  <p class="muted" style="margin:0 0 16px">
+    One line per scenario: the result of its most recently run inspection,
+    across every order in the scenario. Older inspections of the same
+    scenario are not shown here &mdash; open the scenario in Inspection &amp;
+    testing for the full history.
+  </p>
+  <div id="rollupSummary"></div>
+  <div id="rollupBody"></div>
+</div>
+
+<div id="toast"></div>
+
+<script src="/app.js"></script>
+<script>
+'use strict';
+
+async function resHeader(){
+  const r = await api('/api/status');
+  if(!r.ok) return;
+  const d = r.data;
+  $('hdrDot').className = 'dot ' + (d.fusion_running ?
+    (d.effective_state === 'paused' ? 'warn' : 'ok') : 'bad');
+  $('hdrState').textContent = d.fusion_running
+    ? ('pipeline ' + d.effective_state) : 'pipeline not running';
+  $('hdrClock').textContent = d.server_time || '';
+}
+
+/* The latest test per scenario, by created_at (an ISO-ish "YYYY-MM-DD
+   HH:MM:SS" string, so plain string comparison already sorts chronologically).
+   A scenario can hold several orders and each order can be inspected more
+   than once; this is deliberately "one line per scenario", not per order, so
+   latest wins regardless of which order in the scenario it came from. */
+function latestPerScenario(tests){
+  const latest = {};
+  tests.forEach(t => {
+    if(!t.scenario_id) return;
+    const cur = latest[t.scenario_id];
+    if(!cur || (t.created_at || '') > (cur.created_at || '')) latest[t.scenario_id] = t;
+  });
+  return latest;
+}
+
+function scenarioCard(s, test){
+  const overall = test ? test.summary.overall : null;
+  const cls = overall === 'fail' ? 'fail' : overall === 'pass' ? 'pass' : '';
+  const badge = test ? chip(overall) : '<span class="chip pending">No tests yet</span>';
+  const detail = test
+    ? esc(test.order_number) + ' @ ' + esc(test.run_label) + ' &middot; ' + esc(test.created_at)
+    : esc(s.orders.length) + ' order(s), none inspected yet';
+  return '<a class="pickcard ' + cls + '" href="/inspection?scenario=' + esc(s.id) + '">' +
+    '<div class="pickcard-h"><b>' + esc(s.name) + '</b>' + badge + '</div>' +
+    '<div class="muted">' + detail + '</div></a>';
+}
+
+async function renderRollup(){
+  const [rSeries, rScenarios, rTests] = await Promise.all([
+    api('/api/series'), api('/api/scenarios?all=1'), api('/api/tests')
+  ]);
+  const series = (rSeries.data || {}).series || [];
+  const scenarios = (rScenarios.data || {}).scenarios || [];
+  const tests = (rTests.data || {}).tests || [];
+  const latest = latestPerScenario(tests);
+
+  const bySeries = {};
+  scenarios.forEach(s => (bySeries[s.series_id] = bySeries[s.series_id] || []).push(s));
+
+  const counts = {pass: 0, fail: 0, pending: 0, none: 0};
+  scenarios.forEach(s => {
+    const t = latest[s.id];
+    counts[t ? t.summary.overall : 'none']++;
+  });
+  $('rollupSummary').innerHTML =
+    '<div class="pill" style="margin-bottom:18px;gap:14px">' +
+      chip('pass') + ' ' + counts.pass +
+      '<span style="width:1px;height:14px;background:var(--line)"></span>' +
+      chip('fail') + ' ' + counts.fail +
+      '<span style="width:1px;height:14px;background:var(--line)"></span>' +
+      chip('pending') + ' ' + counts.pending +
+      '<span style="width:1px;height:14px;background:var(--line)"></span>' +
+      '<span class="chip pending">No tests yet</span> ' + counts.none +
+    '</div>';
+
+  if(!scenarios.length){
+    $('rollupBody').innerHTML = '<span class="muted">No scenarios have been set up yet.</span>';
+    return;
+  }
+
+  $('rollupBody').innerHTML = series
+    .filter(sr => (bySeries[sr.id] || []).length)
+    .map(sr => {
+      const list = bySeries[sr.id].slice().sort((a, b) => a.name.localeCompare(b.name));
+      return '<div class="card" style="margin-bottom:16px">' +
+        '<h2>' + esc(sr.name || sr.id) + '</h2>' +
+        '<div class="pickgrid">' +
+          list.map(s => scenarioCard(s, latest[s.id])).join('') +
+        '</div></div>';
+    }).join('');
+}
+
+(async () => {
+  await loadDeployment();
+  if(DEPLOY.is_tester){
+    const st = $('hdrState'); if(st) st.textContent = DEPLOY.site_name || 'Inspection';
+    const dot = $('hdrDot'); if(dot) dot.className = 'dot ok';
+  } else {
+    resHeader();
+    setInterval(resHeader, 10000);
+  }
+  renderRollup();
+})();
+</script>
+</body>
+</html>

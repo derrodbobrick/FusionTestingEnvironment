@@ -722,6 +722,8 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_page(parsed, 'inspection.html')
         elif path in ('/generate', '/generate.html'):
             self._serve_page(parsed, 'generate.html')
+        elif path in ('/results', '/results.html'):
+            self._serve_page(parsed, 'results.html')
         elif path in ('/app.css', '/app.js'):
             self._serve_asset(path.lstrip('/'))
         elif path == '/api/status':

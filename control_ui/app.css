@@ -135,6 +135,7 @@
 .pickcard:hover{border-color:var(--accent)}
 .pickcard.pass{border-color:#1d6b40}
 .pickcard.fail{border-color:#7a2b25}
+a.pickcard{display:block;color:inherit;text-decoration:none}
 .pickcard-h{display:flex;justify-content:space-between;align-items:center;gap:6px;
             margin-bottom:4px}
 .wizhead{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
